@@ -691,8 +691,7 @@ def reserve(rail_type="SRT", debug=False):
             )
             msg += "\n결제 완료"
 
-        tgprintf = get_telegram()
-        asyncio.run(tgprintf(msg))
+        _notify(msg)
 
     # Reservation loop
     i_try = 0
@@ -751,7 +750,7 @@ def reserve(rail_type="SRT", debug=False):
             msg = ex.msg
             if "Need to Login" in msg:
                 rail = login(rail_type, debug=debug)
-                if not rail.is_login and not _handle_error(ex):
+                if not rail.logined and not _handle_error(ex):
                     return
             elif not any(
                 err in msg
@@ -789,14 +788,20 @@ def _sleep():
     )
 
 
+def _notify(text: str) -> None:
+    try:
+        asyncio.run(get_telegram()(text))
+    except Exception as err:
+        print(f"[텔레그램 알림 실패] {err}")
+
+
 def _handle_error(ex, msg=None):
     msg = (
         msg
         or f"\nException: {ex}, Type: {type(ex)}, Message: {ex.msg if hasattr(ex, 'msg') else 'No message attribute'}"
     )
     print(msg)
-    tgprintf = get_telegram()
-    asyncio.run(tgprintf(msg))
+    _notify(msg)
     return inquirer.confirm(message="계속할까요", default=True)
 
 
@@ -864,8 +869,7 @@ def check_reservation(rail_type="SRT", debug=False):
                         out.extend(map(str, reservation.tickets))
 
             if out:
-                tgprintf = get_telegram()
-                asyncio.run(tgprintf("\n".join(out)))
+                _notify("\n".join(out))
             return
 
         # If choice is an unpaid reservation, ask to pay or cancel
