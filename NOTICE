@@ -1,0 +1,21 @@
+srtgo bundles one Apache-2.0-licensed file, srtgo/dynapath.py, adapted from:
+
+korail-mobile-api
+Copyright (c) 2026 yakisoba0728
+https://github.com/yakisoba0728/korail-mobile-api
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use that file except in compliance with the License. You may obtain a copy
+of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+srtgo/dynapath.py was trimmed from the upstream project's module of the same
+name to the pure token-generation functions srtgo needs; see the header of
+that file for the specific changes, per License section 4(b).

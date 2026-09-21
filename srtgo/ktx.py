@@ -22,12 +22,19 @@ from Crypto.Util.Padding import pad
 from datetime import datetime, timedelta
 from functools import reduce
 
+from .dynapath import (
+    DYNAPATH_HEADER_NAME,
+    DynapathTokenSettings,
+    generate_dynapath_device_id,
+    generate_dynapath_token,
+)
+
 
 # Constants
 EMAIL_REGEX = re.compile(r"[^@]+@[^@]+\.[^@]+")
 PHONE_NUMBER_REGEX = re.compile(r"(\d{3})-(\d{3,4})-(\d{4})")
 
-USER_AGENT = "Dalvik/2.1.0 (Linux; U; Android 13; SM-S928N Build/UP1A.231005.007)"
+USER_AGENT = "Dalvik/2.1.0 (Linux; U; Android 15; Android)"
 
 DEFAULT_HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -515,9 +522,11 @@ class Korail:
             self._session = requests.session()
         self._session.headers.update(DEFAULT_HEADERS)
         self._device = "AD"
-        self._version = "250601002"
+        self._version = "250601003"
         self._key = "korail1234567890"
         self._idx = None
+        self._dynapath_device_id = generate_dynapath_device_id()
+        self._dynapath_app_start_ts = str(int(time.time() * 1000))
         self.korail_id = korail_id
         self.korail_pw = korail_pw
         self.verbose = verbose
@@ -532,6 +541,13 @@ class Korail:
     def _log(self, msg: str) -> None:
         if self.verbose:
             print(f"[*] {msg}")
+
+    def _dynapath_header(self) -> dict:
+        settings = DynapathTokenSettings(
+            device_id=self._dynapath_device_id,
+            app_start_ts=self._dynapath_app_start_ts,
+        )
+        return {DYNAPATH_HEADER_NAME: generate_dynapath_token(settings)}
 
     def __enc_password(self, password):
         url = API_ENDPOINTS["code"]
@@ -575,7 +591,9 @@ class Korail:
             "idx": self._idx,
         }
 
-        r = self._session.post(API_ENDPOINTS["login"], data=data)
+        r = self._session.post(
+            API_ENDPOINTS["login"], data=data, headers=self._dynapath_header()
+        )
         self._log(r.text)
         j = json.loads(r.text)
 
@@ -669,7 +687,9 @@ class Korail:
             "mbCrdNo": self.membership_number,
         }
 
-        r = self._session.get(API_ENDPOINTS["search_schedule"], params=data)
+        r = self._session.get(
+            API_ENDPOINTS["search_schedule"], params=data, headers=self._dynapath_header()
+        )
         self._log(r.text)
         j = json.loads(r.text)
 
@@ -757,7 +777,9 @@ class Korail:
         for i, psg in enumerate(passengers, 1):
             data.update(psg.get_dict(i))
 
-        r = self._session.get(API_ENDPOINTS["reserve"], params=data)
+        r = self._session.get(
+            API_ENDPOINTS["reserve"], params=data, headers=self._dynapath_header()
+        )
         self._log(r.text)
         j = json.loads(r.text)
         if self._result_check(j):

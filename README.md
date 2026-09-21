@@ -19,3 +19,4 @@
 
 ## Acknowledgments
 - This project includes code from [SRT](https://github.com/ryanking13/SRT) by ryanking13, licensed under the MIT License, and [korail2](https://github.com/carpedm20/korail2) by carpedm20, licensed under the BSD License.
+- `srtgo/dynapath.py` is adapted from [korail-mobile-api](https://github.com/yakisoba0728/korail-mobile-api) by yakisoba0728, licensed under the Apache License 2.0. See `NOTICE`.
