@@ -20,6 +20,7 @@ import re
 from .ktx import (
     Korail,
     KorailError,
+    NoResultsError,
     ReserveOption,
     TrainType,
     AdultPassenger,
@@ -624,7 +625,10 @@ def reserve(rail_type="SRT", debug=False):
         ),
     }
 
-    trains = rail.search_train(**params)
+    try:
+        trains = rail.search_train(**params)
+    except NoResultsError:
+        trains = []
 
     def train_decorator(train):
         msg = train.__repr__()
