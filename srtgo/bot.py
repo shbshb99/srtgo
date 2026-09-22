@@ -85,6 +85,8 @@ DATE_CHOICE_COUNT = 16
 ERROR_NOTIFY_INTERVAL = 20
 # 동시에 도는 대기 수. 한 IP에서 여러 명이 동시에 조회하면 매크로로 걸리기 쉽다.
 MAX_CONCURRENT_WATCHES = 5
+# 연속 실패 시 간격을 늘리되 여기까지만. 너무 길면 자리가 나도 놓친다.
+MAX_BACKOFF_SECONDS = 60
 
 STORE_SERVICE = "srtgo-bot"
 CRED_SERVICE = "srtgo-bot-cred"
@@ -188,7 +190,19 @@ class Session:
         self.tries = 0
         self.started_at = None
         self.last_error = None
+        self.last_error_at = None
+        self.error_count = 0
         self.reservations = []
+
+    def note_error(self, message):
+        self.last_error = message
+        self.last_error_at = time.time()
+        self.error_count += 1
+
+    def clear_error(self):
+        """조회가 성공하면 지운다. 안 지우면 몇 시간 전 오류가 계속 떠 있다."""
+        self.last_error = None
+        self.last_error_at = None
 
     @property
     def is_srt(self):
@@ -434,7 +448,12 @@ class Bot:
             f"🔁 {s.tries}회 시도 ({h:02d}:{m:02d}:{sec:02d} 경과)",
         ]
         if s.last_error:
-            lines.append(f"⚠️ 마지막 오류: {s.last_error}")
+            ago = int(time.time() - s.last_error_at) if s.last_error_at else 0
+            lines.append(f"⚠️ 조회 실패 중 ({ago}초째): {s.last_error}")
+        elif s.error_count:
+            lines.append(f"✅ 정상 (그동안 오류 {s.error_count}회, 모두 자동 복구)")
+        else:
+            lines.append("✅ 정상")
         return "\n".join(lines)
 
     def cancel_task(self, u):
@@ -847,7 +866,37 @@ class Bot:
             "/status 로 진행 상황, /stop 으로 중지할 수 있습니다."
         )
 
+    async def _relogin(self, u, s, rail):
+        """재로그인. 실패해도 루프를 죽이지 않고 쓰던 세션을 그대로 둔다.
+
+        여기서 예외가 새어 나가면 except 블록 안이라 루프 밖까지 튀어나가
+        대기가 조용히 끝나 버린다. 실패하면 다음 회차에서 다시 시도하면 된다.
+        """
+        try:
+            return await asyncio.to_thread(
+                build_rail, s.rail_type, u.chat_id, u.is_owner
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as ex:
+            s.note_error(f"재로그인 실패: {ex}")
+            return rail
+
     async def _reserve_loop(self, context, u, s):
+        try:
+            await self._watch(context, u, s)
+        except asyncio.CancelledError:
+            raise
+        except Exception as ex:
+            # 여기까지 온 건 예상 못 한 경우다. 조용히 끝나면 안 되므로 알린다.
+            s.note_error(f"{type(ex).__name__}: {ex}")
+            await self._try_send(
+                context,
+                u.chat_id,
+                f"⛔ 대기가 중단되었습니다.\n{s.last_error}\n\n/start 에서 다시 시작해 주세요.",
+            )
+
+    async def _watch(self, context, u, s):
         rail = await asyncio.to_thread(build_rail, s.rail_type, u.chat_id, u.is_owner)
         params = s.search_params()
         wanted = set(s.selected)
@@ -865,6 +914,7 @@ class Bot:
                     await self._reserve(context, rail, train, u, s)
                     return
                 errors_since_notify = 0
+                s.clear_error()
                 await asyncio.sleep(self._interval())
 
             except asyncio.CancelledError:
@@ -872,13 +922,12 @@ class Bot:
             except NoResultsError:
                 await asyncio.sleep(self._interval())
             except (NeedToLoginError, SRTNetFunnelError) as ex:
-                s.last_error = str(ex)
-                rail = await asyncio.to_thread(
-                    build_rail, s.rail_type, u.chat_id, u.is_owner
-                )
-                await asyncio.sleep(self._interval())
+                s.note_error(str(ex))
+                rail = await self._relogin(u, s, rail)
+                await asyncio.sleep(self._backoff(errors_since_notify))
+                errors_since_notify += 1
             except Exception as ex:
-                s.last_error = f"{type(ex).__name__}: {ex}"
+                s.note_error(f"{type(ex).__name__}: {ex}")
                 errors_since_notify += 1
                 # CLI와 달리 사람을 기다리지 않는다. 계속 재시도하되 가끔만 알린다.
                 if (
@@ -889,10 +938,8 @@ class Bot:
                         context, u.chat_id, f"⚠️ 계속 재시도 중입니다.\n{s.last_error}"
                     )
                 if isinstance(ex, (SRTError, KorailError)):
-                    rail = await asyncio.to_thread(
-                        build_rail, s.rail_type, u.chat_id, u.is_owner
-                    )
-                await asyncio.sleep(self._interval())
+                    rail = await self._relogin(u, s, rail)
+                await asyncio.sleep(self._backoff(errors_since_notify))
 
     async def _reserve(self, context, rail, train, u, s):
         reservation = await asyncio.to_thread(
@@ -928,6 +975,17 @@ class Bot:
         return (
             gammavariate(RESERVE_INTERVAL_SHAPE, RESERVE_INTERVAL_SCALE)
             + RESERVE_INTERVAL_MIN
+        )
+
+    @classmethod
+    def _backoff(cls, consecutive_errors):
+        """연속 실패하면 간격을 벌린다.
+
+        세션 만료가 계속되면 1.5초마다 로그인을 두드리게 되는데, 그 자체가
+        매크로로 판정될 짓이다. 정상으로 돌아오면 간격도 바로 돌아온다.
+        """
+        return min(
+            cls._interval() * (2**consecutive_errors), MAX_BACKOFF_SECONDS
         )
 
 
