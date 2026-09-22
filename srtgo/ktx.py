@@ -36,6 +36,9 @@ PHONE_NUMBER_REGEX = re.compile(r"(\d{3})-(\d{3,4})-(\d{4})")
 
 USER_AGENT = "Dalvik/2.1.0 (Linux; U; Android 15; Android)"
 
+# 응답 없이 매달려 있지 않도록: 넘기면 실패시키고 다음 시도에서 재요청한다.
+REQUEST_TIMEOUT = 30
+
 DEFAULT_HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
     "User-Agent": USER_AGENT,
@@ -428,7 +431,7 @@ class NetFunnelHelper:
 
     def __init__(self):
         if HAS_CURL_CFFI:
-            self._session = curl_cffi.Session(impersonate="chrome131_android")
+            self._session = curl_cffi.Session(impersonate="chrome131_android", timeout=REQUEST_TIMEOUT)
         else:
             self._session = requests.session()
         self._session.headers.update(self.DEFAULT_HEADERS)
@@ -517,7 +520,7 @@ class Korail:
 
     def __init__(self, korail_id, korail_pw, auto_login=True, verbose=False):
         if HAS_CURL_CFFI:
-            self._session = curl_cffi.Session(impersonate="chrome131_android")
+            self._session = curl_cffi.Session(impersonate="chrome131_android", timeout=REQUEST_TIMEOUT)
         else:
             self._session = requests.session()
         self._session.headers.update(DEFAULT_HEADERS)

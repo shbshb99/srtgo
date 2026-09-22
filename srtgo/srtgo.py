@@ -141,6 +141,7 @@ def srtgo(debug=False):
         ("역 설정", 6),
         ("역 직접 수정", 7),
         ("예매 옵션 설정", 8),
+        ("텔레그램 봇 시작", 9),
         ("나가기", -1),
     ]
 
@@ -159,6 +160,7 @@ def srtgo(debug=False):
         6: lambda rt: set_station(rt),
         7: lambda rt: edit_station(rt),
         8: lambda _: set_options(),
+        9: lambda _: start_bot(),
     }
 
     while True:
@@ -310,7 +312,7 @@ def set_telegram() -> bool:
     if not telegram_info:
         return False
 
-    token, chat_id = telegram_info["token"], telegram_info["chat_id"]
+    token, chat_id = _clean(telegram_info["token"]), _clean(telegram_info["chat_id"])
 
     try:
         keyring.set_password("telegram", "ok", "1")
@@ -325,9 +327,20 @@ def set_telegram() -> bool:
         return False
 
 
+def _clean(value: Optional[str]) -> str:
+    """붙여넣기로 딸려 들어온 제어문자를 걸러낸다 (토큰에 섞이면 URL이 깨진다)."""
+    return "".join(ch for ch in (value or "") if ch.isprintable()).strip()
+
+
+def get_telegram_credentials() -> Tuple[str, str]:
+    return (
+        _clean(keyring.get_password("telegram", "token")),
+        _clean(keyring.get_password("telegram", "chat_id")),
+    )
+
+
 def get_telegram() -> Optional[Callable[[str], Awaitable[None]]]:
-    token = keyring.get_password("telegram", "token")
-    chat_id = keyring.get_password("telegram", "chat_id")
+    token, chat_id = get_telegram_credentials()
 
     async def tgprintf(text):
         if token and chat_id:
@@ -336,6 +349,12 @@ def get_telegram() -> Optional[Callable[[str], Awaitable[None]]]:
                 await bot.send_message(chat_id=chat_id, text=text)
 
     return tgprintf
+
+
+def start_bot() -> None:
+    from .bot import main as bot_main
+
+    bot_main()
 
 
 def set_card() -> None:
