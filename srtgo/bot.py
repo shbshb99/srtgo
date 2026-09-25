@@ -353,14 +353,16 @@ def standby_state(train, rail_type):
 
 
 def availability(train, rail_type) -> str:
+    # 버튼 한 줄에 들어가게 짧게 쓴다. 휴대폰에서 'KTX-산천 4032'처럼 이름·번호가 길면
+    # 끝이 잘려 정작 중요한 좌석 상태가 안 보인다.
     general, special = seat_flags(train, rail_type)
     if general and special:
-        return "일반·특실 있음"
+        return "좌석 있음"
     if general:
-        return "일반실 있음"
+        return "일반실만"
     if special:
-        return "특실만 있음"
-    return "매진·대기 가능" if standby_state(train, rail_type) else "매진"
+        return "특실만"
+    return "매진·대기" if standby_state(train, rail_type) else "매진"
 
 
 def train_title(train) -> str:
@@ -1962,6 +1964,7 @@ class Bot:
             "",
             "감시할 열차를 모두 고르세요 (여러 개 가능).",
             "매진이어도 고르면, 자리가 나는 순간 예매합니다.",
+            "'매진·대기'는 매진이지만 예약대기를 걸 수 있다는 뜻입니다.",
         ]
         if d.searched_at:
             lines.append(f"(좌석 상태는 {ago(time.time() - d.searched_at)} 전 조회 기준)")

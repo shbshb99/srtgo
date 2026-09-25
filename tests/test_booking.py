@@ -72,7 +72,7 @@ def test_ktx_full_flow_reserves_once(env):
         await o.press("search")
         labels = o.screen.labels()
         # 좌석 상태가 잘리지 않고 보인다 (예전엔 60자에서 잘려 예약대기가 안 보였다)
-        assert any("20:09→23:12 KTX 527 · 매진·대기 가능" in x for x in labels), labels
+        assert any("20:09→23:12 KTX 527 · 매진·대기" in x for x in labels), labels
         assert any("21:00→23:45 KTX 131 · 매진" in x for x in labels), labels
         assert rail.last_params["dep"] == "용산" and rail.last_params["time"] == "190000"
         assert rail.last_params["passengers"][0].count == 2
@@ -440,3 +440,21 @@ def test_ktx_only_does_not_hide_suseo_trains(env):
 
     run(go())
     assert botmod.search_params("KTX", "대전", "동탄", day(), "050000", 1, True)["train_type"] == ktx.TrainType.ALL
+
+
+def test_train_buttons_fit_on_a_phone():
+    """휴대폰 버튼 한 줄(한글 2칸 기준 44칸 안팎)에 좌석 상태까지 보여야 한다.
+    'KTX-산천 4032 · 일반·특실 있음'은 끝이 잘려 보였다."""
+    import unicodedata
+
+    def width(text):
+        return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+
+    worst = [
+        ktx_train(4032, "154700", "160400", general="11", special="11", name="KTX-산천"),
+        ktx_train(4032, "154700", "160400", wait="9", name="KTX-산천"),
+        ktx_train(1004, "154700", "160400", general="11", special="11", name="ITX-새마을"),
+    ]
+    for t in worst:
+        label = "⬜ " + botmod.train_line(t, "KTX")
+        assert width(label) <= 42, (label, width(label))
