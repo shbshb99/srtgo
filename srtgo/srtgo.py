@@ -312,7 +312,18 @@ def set_telegram() -> bool:
     if not telegram_info:
         return False
 
-    token, chat_id = _clean(telegram_info["token"]), _clean(telegram_info["chat_id"])
+    raw_token, raw_chat_id = telegram_info["token"] or "", telegram_info["chat_id"] or ""
+    token, chat_id = _clean(raw_token), _clean(raw_chat_id)
+    problems = []
+    if not TELEGRAM_TOKEN_RE.match(token):
+        problems.append("token 형식이 아닙니다 (예: 123456789:AAH...)")
+    if not TELEGRAM_CHAT_ID_RE.match(chat_id):
+        problems.append("chat_id 는 숫자여야 합니다 (예: 123456789)")
+    if problems:
+        # 빈 값을 저장하면 기존 값까지 지워지고, 봇은 이유도 모른 채 켜지지 않는다.
+        print("저장하지 않았습니다: " + ", ".join(problems))
+        _paste_hint(raw_token, raw_chat_id, force=not (token and chat_id))
+        return False
 
     try:
         keyring.set_password("telegram", "ok", "1")
@@ -330,6 +341,19 @@ def set_telegram() -> bool:
 def _clean(value: Optional[str]) -> str:
     """붙여넣기로 딸려 들어온 제어문자를 걸러낸다 (토큰에 섞이면 URL이 깨진다)."""
     return "".join(ch for ch in (value or "") if ch.isprintable()).strip()
+
+
+TELEGRAM_TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
+TELEGRAM_CHAT_ID_RE = re.compile(r"^-?\d{3,}$")
+CTRL_V = "\x16"
+
+
+def _paste_hint(*values: str, force: bool = False) -> bool:
+    """윈도 콘솔의 이 입력칸에서는 Ctrl+V 가 붙여넣기가 아니라 제어문자(\\x16) 하나로 들어온다."""
+    if force or any(CTRL_V in (v or "") for v in values):
+        print("이 입력칸에서는 Ctrl+V 붙여넣기가 되지 않습니다. 마우스 오른쪽 클릭으로 붙여 넣으세요.")
+        return True
+    return False
 
 
 def get_telegram_credentials() -> Tuple[str, str]:
@@ -396,6 +420,8 @@ def set_card() -> None:
         ]
     )
     if card_info:
+        if _paste_hint(*card_info.values()):
+            return
         for key, value in card_info.items():
             keyring.set_password("card", key, value)
         keyring.set_password("card", "ok", "1")
@@ -437,6 +463,8 @@ def set_login(rail_type="SRT", debug=False):
         ]
     )
     if not login_info:
+        return False
+    if _paste_hint(login_info["id"], login_info["pass"]):
         return False
 
     try:
