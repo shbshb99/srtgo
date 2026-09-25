@@ -534,6 +534,9 @@ class Korail:
         self.korail_pw = korail_pw
         self.verbose = verbose
         self.logined = False
+        # 로그인 실패 사유(코레일 응답의 h_msg_txt). login()은 실패해도 예외를 던지지
+        # 않으므로, 호출하는 쪽이 logined 와 함께 이걸 보고 실패를 알아야 한다.
+        self.login_error = None
         self.membership_number = None
         self.name = None
         self.email = None
@@ -610,8 +613,10 @@ class Korail:
                 f"로그인 성공: {self.name} (멤버십번호: {self.membership_number}, 전화번호: {self.phone_number})"
             )
             self.logined = True
+            self.login_error = None
             return True
         self.logined = False
+        self.login_error = j.get("h_msg_txt") or "코레일 로그인 실패 (사유 미상)"
         return False
 
     def logout(self):
@@ -878,17 +883,22 @@ class Korail:
         r = self._session.get(API_ENDPOINTS["myreservationlist"], params=data)
         self._log(r.text)
         j = json.loads(r.text)
+        # 항상 (좌석 목록, wct_no) 를 돌려준다. 예전처럼 None 을 돌려주면 받는 쪽
+        # (reservations)의 언패킹이 터져서, 서버에선 이미 잡힌 예약이 예외로 끝나
+        # '예약 실패'로 보이고 다시 예약하게 된다 (중복 예매). 예약대기처럼 좌석이
+        # 아직 없는 예약에서 이 경로를 탄다.
         try:
             if not self._result_check(j):
-                return []
+                return [], None
 
             wct_no = j.get("h_wct_no")
             if jrny_info := j.get("jrny_infos", {}).get("jrny_info", []):
                 if seat_info := jrny_info[0].get("seat_infos", {}).get("seat_info", []):
                     return [Seat(seat) for seat in seat_info], wct_no
+            return [], wct_no
 
         except NoResultsError:
-            return None
+            return [], None
 
     def pay_with_card(
         self,

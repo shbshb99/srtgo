@@ -34,3 +34,4 @@ Homepage = "https://github.com/lapis42/srtgo"
 [project.scripts]
 srtgo = "srtgo.srtgo:srtgo"
 srtgo-bot = "srtgo.bot:main"
+srtgo-watchdog = "srtgo.watchdog:main"

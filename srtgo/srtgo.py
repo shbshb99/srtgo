@@ -352,9 +352,15 @@ def get_telegram() -> Optional[Callable[[str], Awaitable[None]]]:
 
 
 def start_bot() -> None:
-    from .bot import main as bot_main
+    from .bot import EXIT_ALREADY_RUNNING, run_bot
 
-    bot_main()
+    print("텔레그램 봇을 시작합니다. 텔레그램에서 /start 를 보내세요. (Ctrl-C 로 종료)")
+    print("※ 운영PC에서 워치독(srtgo-watchdog)으로 항상 켜 두고 있다면 여기서 켤 필요가 없습니다.")
+    code = run_bot()
+    if code == EXIT_ALREADY_RUNNING:
+        print("이 PC에서 봇이 이미 실행 중입니다 (워치독이 띄운 봇일 수 있습니다).")
+    elif code == 2:
+        print("텔레그램 설정이 없습니다. '텔레그램 설정'을 먼저 해주세요.")
 
 
 def set_card() -> None:
@@ -434,11 +440,15 @@ def set_login(rail_type="SRT", debug=False):
         return False
 
     try:
-        SRT(
-            login_info["id"], login_info["pass"], verbose=debug
-        ) if rail_type == "SRT" else Korail(
-            login_info["id"], login_info["pass"], verbose=debug
-        )
+        if rail_type == "SRT":
+            SRT(login_info["id"], login_info["pass"], verbose=debug)
+        else:
+            # Korail 은 로그인에 실패해도 예외를 던지지 않는다. 확인 안 하면 틀린
+            # 비밀번호가 그대로 저장되고 이후 모든 조회가 이유 없이 실패한다.
+            korail = Korail(login_info["id"], login_info["pass"], verbose=debug)
+            if not korail.logined:
+                print(f"KTX 로그인 실패: {korail.login_error}")
+                return False
 
         keyring.set_password(rail_type, "id", login_info["id"])
         keyring.set_password(rail_type, "pass", login_info["pass"])
