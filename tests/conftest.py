@@ -67,7 +67,8 @@ def fake_keyring(monkeypatch):
 
 
 # --- 열차·예약 (실제 클래스) -----------------------------------------------
-def ktx_train(no, dep, arr, date=None, general="13", special="13", wait="-1", name="KTX"):
+def ktx_train(no, dep, arr, date=None, general="13", special="13", wait="-1", name="KTX",
+              dep_name="서울", arr_name="부산"):
     """general/special: '11' 가능, '13' 매진. wait: '9' 예약대기 가능, '-1' 없음."""
     date = date or day()
     return ktx.Train(
@@ -76,11 +77,11 @@ def ktx_train(no, dep, arr, date=None, general="13", special="13", wait="-1", na
             "h_trn_clsf_nm": name,
             "h_trn_gp_cd": "100",
             "h_trn_no": f"{int(no):05d}",
-            "h_dpt_rs_stn_nm": "서울",
+            "h_dpt_rs_stn_nm": dep_name,
             "h_dpt_rs_stn_cd": "0001",
             "h_dpt_dt": date,
             "h_dpt_tm": dep,
-            "h_arv_rs_stn_nm": "부산",
+            "h_arv_rs_stn_nm": arr_name,
             "h_arv_rs_stn_cd": "0020",
             "h_arv_dt": date,
             "h_arv_tm": arr,

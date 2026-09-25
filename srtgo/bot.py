@@ -77,6 +77,7 @@ from .srtgo import (
     RESERVE_INTERVAL_SCALE,
     RESERVE_INTERVAL_SHAPE,
     STATIONS,
+    SUSEO_LINE_STATIONS,
     _is_seat_available,
     get_options,
     get_station,
@@ -88,8 +89,17 @@ from .watchdog import EXIT_ALREADY_RUNNING, acquire_lock, data_dir
 log = logging.getLogger("srtgo.bot")
 
 RAIL_TYPES = ("SRT", "KTX")
+# 2026년 9월 1일 SRT 가 KTX 로 통합됐다. 코레일 계정 하나로 수서·동탄·평택지제 출발
+# 열차까지 예매하고, SRT 앱은 회원 예매를 막았다. 그래서 새 예매·예매내역·계정 연결은
+# 코레일(KTX) 쪽으로만 받는다. SRT 코드는 예전에 걸어 둔 대기를 이어가려고만 남겨 둔다.
+BOOKING_RAIL = "KTX"
 RAIL_ICON = {"SRT": "🚄", "KTX": "🚅"}
-RAIL_APP = {"SRT": "SRT 앱", "KTX": "코레일톡 앱"}
+RAIL_APP = {"SRT": "SRT 앱", "KTX": "코레일+ 앱"}
+ACCOUNT_NAME = {"SRT": "SRT", "KTX": "코레일"}
+INTEGRATION_NOTE = (
+    "🚄 SRT는 2026년 9월 1일부터 KTX로 통합됐습니다.\n"
+    "'🚅 열차 예매'에서 수서·동탄·평택지제를 고르면 코레일 계정으로 예매됩니다."
+)
 SEAT_OPTIONS = (
     ("일반실 우선", "GENERAL_FIRST"),
     ("일반실만", "GENERAL_ONLY"),
@@ -571,6 +581,8 @@ def search_params(rail_type, dep, arr, date, time_, total, ktx_only):
             "passengers": [Adult(total)],
             "available_only": False,
         }
+    # 옛 SRT 노선엔 고속열차만 다닌다. 'KTX만' 필터를 걸면 옛 SRT 열차가 빠질 수 있어 뺀다.
+    suseo_line = bool({dep, arr} & set(SUSEO_LINE_STATIONS))
     return {
         "dep": dep,
         "arr": arr,
@@ -578,7 +590,7 @@ def search_params(rail_type, dep, arr, date, time_, total, ktx_only):
         "time": time_,
         "passengers": [AdultPassenger(total)],
         "include_no_seats": True,
-        "train_type": TrainType.KTX if ktx_only else TrainType.ALL,
+        "train_type": TrainType.KTX if ktx_only and not suseo_line else TrainType.ALL,
     }
 
 
@@ -1261,10 +1273,10 @@ class Bot:
     def home_markup(self, u):
         n = len(u.watches)
         rows = [
-            [("🚄 SRT 예매", "book:SRT"), ("🚅 KTX 예매", "book:KTX")],
-            [("🎫 SRT 예매내역", "rv:SRT"), ("🎫 KTX 예매내역", "rv:KTX")],
-            [(f"📋 대기 상황{f' ({n})' if n else ''}", "status"), ("⏹ 대기 중지", "stop")],
-            [("⚙️ 설정", "set"), ("❓ 도움말", "help")],
+            [("🚅 열차 예매 (KTX·SRT)", f"book:{BOOKING_RAIL}")],
+            [("🎫 예매내역", f"rv:{BOOKING_RAIL}"), (f"📋 대기 상황{f' ({n})' if n else ''}", "status")],
+            [("⏹ 대기 중지", "stop"), ("⚙️ 설정", "set")],
+            [("❓ 도움말", "help")],
         ]
         if u.is_owner:
             pending = len(self.store.users("pending"))
@@ -1274,7 +1286,7 @@ class Bot:
     async def show_home(self, r, note=None):
         u = r.u
         lines = [note, ""] if note else []
-        lines.append("🚄 srtgo 예매 봇")
+        lines.append("🚅 srtgo 예매 봇 (KTX·SRT 통합)")
         if u.watches:
             lines.append(f"👀 대기 {len(u.watches)}건이 돌고 있습니다.")
         else:
@@ -1286,18 +1298,19 @@ class Bot:
         pay = (
             "💳 결제: 🎫 예매내역에서 카드 결제할 수 있고, 예매할 때 '자동 결제'도 고를 수 있어요."
             if u.is_owner
-            else "💳 결제: 예매되면 구입기한 안에 코레일톡/SRT 앱에서 결제해 주세요. 안 하면 자동 취소됩니다."
+            else "💳 결제: 예매되면 구입기한 안에 코레일+ 앱에서 결제해 주세요. 안 하면 자동 취소됩니다."
         )
         text = "\n".join(
             [
                 "❓ srtgo 봇 사용법",
                 "",
-                "🚄 예매: SRT/KTX 예매 → 출발역·도착역 → 날짜 → 시각 → 인원 → 감시할 열차 → 좌석 → 대기 시작",
+                "🚅 예매: 열차 예매 → 출발역·도착역 → 날짜 → 시각 → 인원 → 감시할 열차 → 좌석 → 대기 시작",
+                "  KTX와 옛 SRT(수서·동탄·평택지제) 열차 모두 코레일 계정 하나로 예매합니다.",
                 "  자리가 나면 자동으로 예매하고 바로 알려 드립니다. 매진이면 예약대기도 신청할 수 있어요.",
                 f"  대기는 한 사람당 {MAX_WATCHES_PER_USER}건까지 (가는 편·오는 편 따로 걸기).",
                 "🎫 예매내역: 예약·승차권 보기, 취소·환불",
                 pay,
-                "⚙️ 설정: 자주 쓰는 역(⭐), 역 직접 추가, 승객 유형(어린이·경로·장애인), KTX만 검색, 계정 연결",
+                "⚙️ 설정: 자주 쓰는 역(⭐), 역 직접 추가, 승객 유형(어린이·경로·장애인), KTX만 검색, 코레일 계정 연결",
                 "",
                 "명령어",
                 "/start 메뉴 · /status 대기 상황 · /stop 대기 중지 · /settings 설정 · /help 도움말",
@@ -1324,30 +1337,25 @@ class Bot:
         u = r.u
         pax = u.pax_types()
         ktx_only = u.ktx_only()
-        accounts = " · ".join(
-            f"{rt} {'✅' if account_source(u.chat_id, rt, u.is_owner) else '⬜'}"
-            for rt in RAIL_TYPES
-        )
         lines = [note, ""] if note else []
         lines += [
             "⚙️ 설정 (나에게만 적용)",
             "",
-            f"⭐ SRT 자주 쓰는 역: {', '.join(u.stations('SRT'))}",
-            f"⭐ KTX 자주 쓰는 역: {', '.join(u.stations('KTX'))}",
+            f"⭐ 자주 쓰는 역: {', '.join(u.stations(BOOKING_RAIL))}",
             f"👥 승객 유형: 어른{''.join(' · ' + PAX_LABEL[k] for k in pax)}",
-            f"🚅 KTX 검색: {'KTX 계열만' if ktx_only else '모든 열차 (ITX·무궁화 포함)'}",
-            f"🔑 계정: {accounts}",
+            f"🚅 검색: {'KTX 계열만 (ITX·무궁화 빼기)' if ktx_only else '모든 열차 (ITX·무궁화 포함)'}",
+            f"🔑 코레일 계정: {self.account_line(u, BOOKING_RAIL)}",
             "",
             "승객 유형을 켜면 예매할 때 인원을 따로 고를 수 있어요.",
         ]
         rows = [
-            [("⭐ SRT 역 편집", "fav:SRT"), ("⭐ KTX 역 편집", "fav:KTX")],
+            [("⭐ 자주 쓰는 역 편집", f"fav:{BOOKING_RAIL}")],
             *chunk(
                 [(f"{'✅' if k in pax else '⬜'} {PAX_LABEL[k]}", f"paxt:{k}") for k in OPTIONAL_PAX],
                 2,
             ),
-            [(f"{'✅' if ktx_only else '⬜'} KTX만 검색 (KTX 예매)", "ktxonly")],
-            [("🔑 계정 연결·관리", "acct")],
+            [(f"{'✅' if ktx_only else '⬜'} KTX만 검색 (ITX·무궁화 빼기)", "ktxonly")],
+            [("🔑 코레일 계정 연결·관리", "acct")],
             [HOME],
         ]
         await r.show("\n".join(lines), kb(rows))
@@ -1367,7 +1375,19 @@ class Bot:
         u.store.save()
         await self.show_settings(r)
 
+    async def _legacy_srt(self, r, rail_type):
+        """통합 전에 받은 SRT 버튼을 누르면 안내한다. 안내했으면 True."""
+        if rail_type != "SRT":
+            return False
+        await r.show(
+            INTEGRATION_NOTE,
+            kb([[("🚅 열차 예매 (KTX·SRT)", f"book:{BOOKING_RAIL}")], [("⚙️ 설정", "set"), HOME]]),
+        )
+        return True
+
     async def btn_fav(self, r, rail_type):
+        if await self._legacy_srt(r, rail_type):
+            return
         await self.show_fav(r, rail_type)
 
     async def show_fav(self, r, rail_type, note=None):
@@ -1377,7 +1397,7 @@ class Bot:
         favs = u.stations(rail_type)
         lines = [note, ""] if note else []
         lines += [
-            f"⭐ {rail_type} 자주 쓰는 역",
+            "⭐ 자주 쓰는 역" if rail_type == BOOKING_RAIL else f"⭐ {rail_type} 자주 쓰는 역",
             f"지금: {', '.join(favs)}",
             "",
             "역을 누르면 넣고 뺄 수 있어요. 예매할 때 ⭐ 역이 먼저 나옵니다.",
@@ -1411,12 +1431,14 @@ class Bot:
     async def btn_favadd(self, r, rail_type):
         if rail_type not in RAIL_TYPES:
             return await self.show_settings(r)
+        if await self._legacy_srt(r, rail_type):
+            return
         r.u.awaiting = ("station", rail_type)
-        example = "평택지제, 포항" if rail_type == "SRT" else "진부(오대산), 태화강"
+        example = "진부(오대산), 태화강"
         await r.show(
-            f"➕ 추가할 {rail_type} 역 이름을 이 대화창에 보내 주세요.\n"
+            "➕ 추가할 역 이름을 이 대화창에 보내 주세요.\n"
             f"여러 개는 쉼표로 구분합니다. (예: {example})\n"
-            "코레일/SRT 앱에 나오는 이름 그대로 써 주세요.",
+            "코레일+ 앱에 나오는 이름 그대로 써 주세요.",
             kb([[("◀ 역 편집으로", f"fav:{rail_type}")]]),
         )
 
@@ -1456,31 +1478,38 @@ class Bot:
     async def show_accounts(self, r, note=None):
         u = r.u
         lines = [note, ""] if note else []
-        lines.append("🔑 계정 연결")
-        rows = []
-        for rt in RAIL_TYPES:
-            lines.append(f"{RAIL_ICON[rt]} {rt}: {self.account_line(u, rt)}")
-            row = [(f"🔑 {rt} 연결·변경", f"link:{rt}")]
-            if account_source(u.chat_id, rt, u.is_owner) == "bot":
-                row.append((f"🗑 {rt} 연결 해제", f"unlink:{rt}"))
-            rows.append(row)
+        lines += ["🔑 코레일 계정 (KTX·SRT 통합)", self.account_line(u, BOOKING_RAIL)]
+        row = [("🔑 코레일 계정 연결·변경", f"link:{BOOKING_RAIL}")]
+        if account_source(u.chat_id, BOOKING_RAIL, u.is_owner) == "bot":
+            row.append(("🗑 연결 해제", f"unlink:{BOOKING_RAIL}"))
+        rows = [row]
+        if Creds.get(u.chat_id, "SRT")[0]:
+            lines.append("옛 SRT 계정이 남아 있습니다. 이제 쓰지 않으니 지워도 됩니다.")
+            rows.append([("🗑 옛 SRT 계정 지우기", "unlink:SRT")])
         lines += [
+            "",
+            "코레일 아이디는 멤버십 번호, 이메일, 휴대폰 번호 중 하나입니다.",
+            "휴대폰 번호는 010-1234-5678처럼 하이픈(-)을 넣어 주세요.",
+            "SRT만 쓰던 분은 코레일+ 앱에서 먼저 코레일 회원(통합회원)으로 가입해 주세요.",
             "",
             "아이디와 비밀번호를 차례로 보내 주시면 로그인을 확인한 뒤 저장합니다.",
             "받은 메시지는 즉시 지우고, 운영PC의 자격증명 저장소에만 보관합니다.",
         ]
         if u.is_owner:
-            lines.append("오너는 연결하지 않으면 PC의 srtgo '로그인 설정' 계정을 씁니다.")
+            lines.append("오너는 연결하지 않으면 PC의 srtgo '로그인 설정'(KTX) 계정을 씁니다.")
         rows.append([("◀ 설정", "set"), HOME])
         await r.show("\n".join(lines), kb(rows))
 
     async def btn_link(self, r, rail_type):
         if rail_type not in RAIL_TYPES:
             return await self.show_accounts(r)
+        if await self._legacy_srt(r, rail_type):
+            return
         r.u.awaiting = ("link", rail_type, "id", None)
         await r.show(
-            f"🔑 {rail_type} 계정 연결\n\n"
-            f"{rail_type} 아이디(멤버십 번호·이메일·휴대폰 번호)를 이 대화창에 보내 주세요.\n"
+            "🔑 코레일 계정 연결\n\n"
+            "코레일 아이디를 이 대화창에 보내 주세요.\n"
+            "멤버십 번호, 이메일, 휴대폰 번호(010-1234-5678처럼 하이픈 포함) 중 하나입니다.\n"
             "받는 즉시 메시지를 지웁니다.",
             kb([[("✖ 취소", "acct")]]),
         )
@@ -1497,20 +1526,20 @@ class Bot:
             u.awaiting = ("link", rail_type, "pw", text)
             await self._send(
                 u.chat_id,
-                f"🔒 이제 {rail_type} 비밀번호를 보내 주세요. (받는 즉시 지웁니다){warn}",
+                f"🔒 이제 {ACCOUNT_NAME[rail_type]} 비밀번호를 보내 주세요. (받는 즉시 지웁니다){warn}",
                 kb([[("✖ 취소", "acct")]]),
             )
             return
 
         u.awaiting = None
         r = Reply(self, u)
-        await r.show(f"⏳ {rail_type} 로그인 확인 중...{warn}")
+        await r.show(f"⏳ {ACCOUNT_NAME[rail_type]} 로그인 확인 중...{warn}")
         try:
             rail = await asyncio.to_thread(open_rail, rail_type, pending_id, text)
         except RailLoginError as ex:
             log.info("%s: %s 계정 연결 실패 (%s)", u.chat_id, rail_type, ex.reason)
             await r.show(
-                f"❌ {rail_type} 로그인 실패: {ex.reason}\n"
+                f"❌ {ACCOUNT_NAME[rail_type]} 로그인 실패: {ex.reason}\n"
                 "계정은 저장하지 않았습니다. 아이디·비밀번호를 확인하고 다시 시도해 주세요.",
                 kb([[("🔑 다시 입력", f"link:{rail_type}")], [("◀ 계정 관리", "acct"), HOME]]),
             )
@@ -1528,10 +1557,10 @@ class Bot:
         name = account_name(rail)
         log.info("%s: %s 계정 연결", u.chat_id, rail_type)
         await r.show(
-            f"✅ {rail_type} 계정을 연결했습니다{f' ({name}님)' if name else ''}.",
+            f"✅ {ACCOUNT_NAME[rail_type]} 계정을 연결했습니다{f' ({name}님)' if name else ''}.",
             kb(
                 [
-                    [(f"{RAIL_ICON[rail_type]} {rail_type} 예매하기", f"book:{rail_type}")],
+                    [("🚅 열차 예매하기", f"book:{BOOKING_RAIL}")],
                     [("◀ 계정 관리", "acct"), HOME],
                 ]
             ),
@@ -1541,7 +1570,7 @@ class Bot:
         if rail_type not in RAIL_TYPES:
             return await self.show_accounts(r)
         await r.show(
-            f"🗑 텔레그램으로 연결한 {rail_type} 계정을 지울까요?\n"
+            f"🗑 텔레그램으로 연결한 {ACCOUNT_NAME[rail_type]} 계정을 지울까요?\n"
             "돌고 있는 대기는 다음 로그인 때 계정이 없어 멈춥니다.",
             kb([[("🗑 지우기", f"unlinkok:{rail_type}"), ("◀ 아니오", "acct")]]),
         )
@@ -1551,17 +1580,17 @@ class Bot:
             Creds.clear(r.u.chat_id, rail_type)
             r.u.rails.pop(rail_type, None)
             log.info("%s: %s 계정 연결 해제", r.u.chat_id, rail_type)
-        await self.show_accounts(r, note=f"🗑 {rail_type} 계정 연결을 지웠습니다.")
+        await self.show_accounts(r, note=f"🗑 {ACCOUNT_NAME.get(rail_type, rail_type)} 계정 연결을 지웠습니다.")
 
     async def show_login_failed(self, r, ex):
-        lines = [f"🔑 {ex.rail_type} 로그인 실패: {ex.reason}"]
+        lines = [f"🔑 {ACCOUNT_NAME.get(ex.rail_type, ex.rail_type)} 로그인 실패: {ex.reason}"]
         if ex.permanent:
             lines.append("계정을 다시 연결해 주세요.")
         else:
             lines.append("잠시 후 다시 시도해 주세요.")
         await r.show(
             "\n".join(lines),
-            kb([[(f"🔑 {ex.rail_type} 계정 연결", f"link:{ex.rail_type}")], [HOME]]),
+            kb([[("🔑 코레일 계정 연결", f"link:{BOOKING_RAIL}")], [HOME]]),
         )
 
     # --- 사용자 관리 (오너 전용) -----------------------------------------
@@ -1595,9 +1624,7 @@ class Bot:
         for cid, e in approved:
             ctx = self.contexts.get(cid)
             n = len(ctx.watches) if ctx else len(self.store.data["watches"].get(cid, []))
-            accts = " ".join(
-                f"{rt}{'✅' if Creds.get(cid, rt)[0] else '⬜'}" for rt in RAIL_TYPES
-            )
+            accts = f"코레일{'✅' if Creds.get(cid, BOOKING_RAIL)[0] else '⬜'}"
             lines.append(f"• {self._who(e, cid)} · 대기 {n}건 · {accts}")
             rows.append([(f"🚫 {(e.get('name') or cid)[:12]} 사용 해제", f"revoke:{cid}")])
         if denied:
@@ -1618,7 +1645,9 @@ class Bot:
         await self._send(
             cid,
             "✅ 사용이 승인되었습니다!\n"
-            "먼저 ⚙️ 설정 → 🔑 계정 연결에서 코레일(KTX)/SRT 계정을 연결해 주세요.",
+            "먼저 ⚙️ 설정 → 🔑 코레일 계정 연결에서 코레일 계정을 연결해 주세요.\n"
+            "KTX와 옛 SRT(수서) 열차 모두 코레일 계정 하나로 예매합니다. "
+            "SRT만 쓰던 분은 코레일+ 앱에서 먼저 코레일 회원으로 가입해 주세요.",
             kb([[("🔑 계정 연결", "acct")], [("↩︎ 메뉴 열기", "home")]]),
         )
         await self.show_users(r, note=f"✅ {self._who(entry, cid)} 님을 승인했습니다.")
@@ -1665,7 +1694,8 @@ class Bot:
 
     # --- 예매: 역 --------------------------------------------------------
     def _header(self, d):
-        parts = [f"{RAIL_ICON.get(d.rail_type, '')} {d.rail_type} 예매"]
+        name = "열차" if d.rail_type == BOOKING_RAIL else d.rail_type
+        parts = [f"{RAIL_ICON.get(d.rail_type, '')} {name} 예매"]
         if d.dep:
             parts.append(f"{d.dep} → {d.arr or '?'}")
         if d.date:
@@ -1680,11 +1710,14 @@ class Bot:
     async def btn_book(self, r, rail_type):
         if rail_type not in RAIL_TYPES:
             return await self.show_home(r)
+        if await self._legacy_srt(r, rail_type):
+            return
         u = r.u
         if not account_source(u.chat_id, rail_type, u.is_owner):
             return await r.show(
-                f"🔑 {rail_type} 계정이 아직 연결되지 않았습니다. 먼저 연결해 주세요.",
-                kb([[(f"🔑 {rail_type} 계정 연결", f"link:{rail_type}")], [HOME]]),
+                "🔑 코레일 계정이 아직 연결되지 않았습니다. 먼저 연결해 주세요.\n"
+                "(KTX와 옛 SRT 열차 모두 코레일 계정 하나로 예매합니다)",
+                kb([[("🔑 코레일 계정 연결", f"link:{BOOKING_RAIL}")], [HOME]]),
             )
         u.draft = d = Draft(rail_type)
         last = u.last_route(rail_type)
@@ -2252,11 +2285,11 @@ class Bot:
                         log.warning("%s: 대기 %s 로그인 거부로 중지: %s", u.chat_id, w.id, ex.reason)
                         await self._send(
                             u.chat_id,
-                            f"🔑 {w.rail_type} 로그인이 거부되어 대기를 멈췄습니다.\n"
+                            f"🔑 {ACCOUNT_NAME[w.rail_type]} 로그인이 거부되어 대기를 멈췄습니다.\n"
                             f"사유: {ex.reason}\n\n{w.headline()}\n"
                             "계정을 다시 연결한 뒤 새로 시작해 주세요. "
                             "(계속 시도하면 계정이 잠길 수 있어 멈춥니다)",
-                            kb([[(f"🔑 {w.rail_type} 계정 연결", f"link:{w.rail_type}")], [HOME]]),
+                            kb([[("🔑 코레일 계정 연결", f"link:{BOOKING_RAIL}")], [HOME]]),
                         )
                         return
                     fails += 1
@@ -2369,7 +2402,7 @@ class Bot:
                         f"{w.headline()}\n\n"
                         "중복 예매를 막으려고 이 대기를 멈춥니다. 예매내역을 꼭 확인해 주세요.\n"
                         f"({describe_error(ex)})",
-                        kb([[(f"🎫 {w.rail_type} 예매내역", f"rv:{w.rail_type}")], [HOME]]),
+                        kb([[("🎫 예매내역", f"rv:{w.rail_type}")], [HOME]]),
                     )
                     return "done", None
                 if found is None:
@@ -2385,7 +2418,7 @@ class Bot:
                 u.chat_id,
                 f"❓ {train_title(train)} 예약 처리 중 오류가 났습니다. 예매내역을 확인해 주세요.\n"
                 f"{w.headline()}\n({describe_error(ex)})",
-                kb([[(f"🎫 {w.rail_type} 예매내역", f"rv:{w.rail_type}")], [HOME]]),
+                kb([[("🎫 예매내역", f"rv:{w.rail_type}")], [HOME]]),
             )
             return "done", None
 
@@ -2425,7 +2458,7 @@ class Bot:
             reservation = next(
                 (x for x in result if same_train(x, train) and rsv_id(x) not in known), None
             )
-        buttons = kb([[(f"🎫 {w.rail_type} 예매내역", f"rv:{w.rail_type}")], [HOME]])
+        buttons = kb([[("🎫 예매내역", f"rv:{w.rail_type}")], [HOME]])
         if reservation is None:
             log.info("%s: 예약 접수 (상세 불명) %s", u.chat_id, train_title(train))
             await self._send_important(
@@ -2483,13 +2516,15 @@ class Bot:
     async def load_reservations(self, r, rail_type, note=None):
         if rail_type not in RAIL_TYPES:
             return await self.show_home(r)
+        if await self._legacy_srt(r, rail_type):
+            return
         u = r.u
         if not account_source(u.chat_id, rail_type, u.is_owner):
             return await r.show(
-                f"🔑 {rail_type} 계정이 아직 연결되지 않았습니다.",
-                kb([[(f"🔑 {rail_type} 계정 연결", f"link:{rail_type}")], [HOME]]),
+                "🔑 코레일 계정이 아직 연결되지 않았습니다.",
+                kb([[("🔑 코레일 계정 연결", f"link:{BOOKING_RAIL}")], [HOME]]),
             )
-        await r.show(((note + "\n\n") if note else "") + f"🎫 {rail_type} 예매내역을 불러오는 중...")
+        await r.show(((note + "\n\n") if note else "") + "🎫 예매내역을 불러오는 중...")
         try:
             items = await self._with_rail(u, rail_type, lambda rail: list_reservations(rail, rail_type))
         except RailLoginError as ex:
@@ -2510,9 +2545,9 @@ class Bot:
             return await self.show_home(r)
         lines = [note, ""] if note else []
         if not items:
-            lines.append(f"🎫 {rail_type} 예매내역이 없습니다.")
+            lines.append("🎫 예매내역이 없습니다.")
             return await r.show("\n".join(lines), kb([[("🔄 새로고침", f"rv:{rail_type}")], [HOME]]))
-        lines.append(f"🎫 {rail_type} 예매내역 ({len(items)}건)")
+        lines.append(f"🎫 예매내역 ({len(items)}건)")
         rows = []
         for i, item in enumerate(items):
             lines += ["", f"{i + 1}. {item_state(item)}", f"   {describe(item)}"]

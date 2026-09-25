@@ -15,7 +15,7 @@ from conftest import (
     until,
 )
 from srtgo import bot as botmod
-from srtgo import ktx, srt
+from srtgo import ktx
 
 
 async def start_watch(p, rail_type, dep, arr, picks, hour="19", date=None, before_go=None):
@@ -47,11 +47,12 @@ def test_ktx_full_flow_reserves_once(env):
     async def go():
         o = env.owner
         await o.command("start")
-        assert {"book:KTX", "book:SRT", "rv:KTX", "status", "stop", "set", "users"} <= set(o.screen.data())
+        assert {"book:KTX", "rv:KTX", "status", "stop", "set", "users"} <= set(o.screen.data())
+        assert "book:SRT" not in o.screen.data(), "통합 뒤에도 SRT 예매 버튼이 따로 있음"
 
         await o.press("book:KTX")
         # 자주 쓰는 역이 먼저, 전체 역은 버튼으로
-        assert "dep:서울" in o.screen.data() and "dep:용산" not in o.screen.data()
+        assert {"dep:서울", "dep:수서"} <= set(o.screen.data()) and "dep:용산" not in o.screen.data()
         await o.press("stall:dep")
         assert {"dep:용산", "dep:여수EXPO", "dep:진부(오대산)"} <= set(o.screen.data())
         await o.press("dep:용산")
@@ -110,54 +111,62 @@ def test_ktx_full_flow_reserves_once(env):
     run(go())
 
 
-def test_srt_train_is_identified_and_reserved(env):
-    """예전엔 SRT 열차 번호(train_number)를 못 읽어 모든 SRT 열차가 같은 열차로 보였다."""
-    t301 = srt_train(301, "053000", "080000")
-    t303 = srt_train(303, "060000", "083000", general="예약가능")
-    rail = FakeSRT([t301, t303])
-    env.rails[(OWNER, "SRT")] = rail
+def test_suseo_departure_books_with_korail_account(env):
+    """9월 통합 뒤: 수서 출발(옛 SRT) 열차도 코레일 계정으로 조회·예매한다."""
+    t301 = ktx_train(301, "053000", "080000", name="SRT", dep_name="수서")
+    t303 = ktx_train(303, "060000", "083000", general="11", name="SRT", dep_name="수서")
+    rail = FakeKorail([t301, t303])
+    env.rails[(OWNER, "KTX")] = rail
+    srt_rail = FakeSRT([])
+    env.rails[(OWNER, "SRT")] = srt_rail
 
     async def go():
         o = env.owner
-        await start_watch(o, "SRT", "수서", "부산", ["tr:301:053000"], hour="05")
+        await start_watch(o, "KTX", "수서", "부산", ["tr:301:053000"], hour="05")
+        assert rail.last_params["dep"] == "수서"
         u = env.bot.context_for(OWNER)
         (w,) = u.watches.values()
-        assert w.selected == [("301", day(), "053000")]
+        assert w.rail_type == "KTX" and w.selected == [("301", day(), "053000")]
         await until(lambda: rail.searches >= 4)
         assert rail.reserve_calls == [], "고르지 않은 303을 예약함"
 
-        t301.general_seat_state = "예약가능"
+        t301.general_seat = "11"
         await until(lambda: not u.watches)
         assert [c[0] for c in rail.reserve_calls] == [t301]
-        assert rail.reserve_calls[0][2] == srt.SeatType.GENERAL_FIRST
+        assert srt_rail.searches == 0 and srt_rail.reserve_calls == [], "SRT 계정을 씀"
         assert "🎉 예매 성공" in env.tg.texts(OWNER)
 
     run(go())
 
 
-def test_srt_standby_is_used_when_sold_out(env):
-    t = srt_train(301, "053000", "080000", wait="9")
-    rail = FakeSRT([t])
-    env.rails[(FAMILY, "SRT")] = rail
+def test_srt_train_numbers_are_read_for_old_watches():
+    """통합 전에 걸어 둔 SRT 대기를 이어가려면 SRT 열차 번호(train_number)를 읽어야 한다."""
+    t = srt_train(301, "053000", "080000")
+    assert botmod.train_key(t) == ("301", t.dep_date, "053000")
+    assert botmod.train_title(t) == "05:30 SRT 301"
+
+
+def test_standby_is_used_when_sold_out(env):
+    t = ktx_train(301, "053000", "080000", wait="9", name="SRT", dep_name="수서")
+    rail = FakeKorail([t])
+    env.rails[(FAMILY, "KTX")] = rail
 
     async def go():
-        await start_watch(env.family, "SRT", "수서", "부산", ["tr:301:053000"], hour="05")
+        await start_watch(env.family, "KTX", "수서", "부산", ["tr:301:053000"], hour="05")
         u = env.bot.context_for(FAMILY)
         await until(lambda: not u.watches)
         text = env.tg.texts(FAMILY)
         assert "⏳ 예약대기 신청 완료" in text
-        assert "코레일톡 앱" not in text and "결제" in text
+        assert "배정되면 구입기한 안에 결제" in text
 
     run(go())
 
 
 def test_reservation_list_does_not_disturb_running_watch(env):
-    """예전엔 예매내역을 한 번 보기만 해도 돌던 대기의 철도 종류가 바뀌어 망가졌다."""
+    """예전엔 예매내역을 한 번 보기만 해도 돌던 대기의 조건이 바뀌어 망가졌다."""
     t = ktx_train(527, "200900", "231200")
     rail = FakeKorail([t])
-    other = FakeSRT([])
     env.rails[(OWNER, "KTX")] = rail
-    env.rails[(OWNER, "SRT")] = other
 
     async def go():
         o = env.owner
@@ -166,18 +175,18 @@ def test_reservation_list_does_not_disturb_running_watch(env):
         (w,) = u.watches.values()
 
         await o.press("home")
-        await o.press("rv:SRT")
-        assert "SRT 예매내역이 없습니다" in o.screen.text
+        await o.press("rv:KTX")
+        assert "예매내역이 없습니다" in o.screen.text
         await o.press("home")
-        await o.press("book:SRT")
-        await o.press("dep:수서")
+        await o.press("book:KTX")
+        await o.press("dep:수서")  # 새 예매 조건을 만드는 중
 
         assert w.rail_type == "KTX" and w.params()["dep"] == "서울"
         t.general_seat = "11"
         await until(lambda: not u.watches)
-        assert len(rail.reserve_calls) == 1 and other.reserve_calls == []
-        # 예매 중이던 SRT 조건은 그대로 남아 있다
-        assert u.draft.rail_type == "SRT" and u.draft.dep == "수서"
+        assert len(rail.reserve_calls) == 1
+        # 만들던 예매 조건은 그대로 남아 있다
+        assert u.draft.rail_type == "KTX" and u.draft.dep == "수서"
 
     run(go())
 
@@ -192,6 +201,10 @@ def test_old_buttons_after_restart_give_guidance(env):
         assert "예매내역을 다시 열어" in o.screen.text
         await o.tap("whatever:1")
         assert "오래된 버튼" in o.screen.text
+        # 통합 전에 받은 SRT 버튼은 KTX 로 안내한다
+        for data in ("book:SRT", "rv:SRT", "fav:SRT", "favadd:SRT"):
+            await o.tap(data)
+            assert "KTX로 통합" in o.screen.text and "book:KTX" in o.screen.data(), data
         await o.tap("stop:deadbe")
         assert "이미 끝난 대기" in o.screen.text
 
@@ -217,7 +230,8 @@ def test_favorite_stations_editor(env):
         u = env.bot.context_for(FAMILY)
         await f.command("settings")
         await f.press("fav:KTX")
-        assert "⭐ 서울" in f.screen.labels()
+        assert {"⭐ 서울", "⭐ 수서"} <= set(f.screen.labels()), "기본 역에 수서가 없음"
+        assert "동탄" in f.screen.labels() and "평택지제" in f.screen.labels()
         await f.press("favt:KTX:용산")
         await f.press("favt:KTX:서울")
         labels = f.screen.labels()
@@ -227,20 +241,15 @@ def test_favorite_stations_editor(env):
         await f.say("진부(오대산), 태화강 abc")
         assert "추가했습니다: 진부(오대산), 태화강" in f.screen.text
         assert "추가하지 못함: abc" in f.screen.text
-        assert u.stations("KTX") == ["대전", "동대구", "부산", "용산", "진부(오대산)", "태화강"]
-
-        # SRT는 SRT가 서는 역만
-        await f.press("set")
-        await f.press("fav:SRT")
-        await f.press("favadd:SRT")
-        await f.say("서울, 평택지제")
-        assert "추가했습니다: 평택지제" in f.screen.text and "추가하지 못함: 서울" in f.screen.text
+        mine = ["수서", "대전", "동대구", "부산", "용산", "진부(오대산)", "태화강"]
+        assert u.stations("KTX") == mine
 
         # 예매할 때 자주 쓰는 역이 그 순서로 나온다
         await f.command("start")
         await f.press("book:KTX")
         deps = [d for d in f.screen.data() if d.startswith("dep:")]
-        assert deps == [f"dep:{s}" for s in ["대전", "동대구", "부산", "용산", "진부(오대산)", "태화강"]]
+        assert deps == [f"dep:{s}" for s in mine]
+        assert json.loads(env.path.read_text())["prefs"][FAMILY]["stations"]["KTX"] == mine
 
         # 마지막 하나는 뺄 수 없다
         u.set_stations("KTX", ["부산"])
@@ -250,9 +259,8 @@ def test_favorite_stations_editor(env):
         assert "최소 1개" in f.screen.text and u.stations("KTX") == ["부산"]
 
         await f.press("favreset:KTX")
-        assert u.stations("KTX") == ["서울", "대전", "동대구", "부산"]
-        saved = json.loads(env.path.read_text())
-        assert saved["prefs"][FAMILY]["stations"]["SRT"][-1] == "평택지제"
+        assert u.stations("KTX") == ["서울", "수서", "대전", "동대구", "부산"]
+        assert "KTX" not in json.loads(env.path.read_text())["prefs"][FAMILY].get("stations", {})
 
     run(go())
 
@@ -267,7 +275,7 @@ def test_passenger_types_and_ktx_only(env):
         await f.press("paxt:child")
         await f.press("ktxonly")
         labels = f.screen.labels()
-        assert "✅ 어린이" in labels and "✅ KTX만 검색 (KTX 예매)" in labels
+        assert "✅ 어린이" in labels and "✅ KTX만 검색 (ITX·무궁화 빼기)" in labels
 
         await f.command("start")
         await f.press("book:KTX")
@@ -410,3 +418,25 @@ def test_quick_taps_are_handled_in_order(env):
         assert "좌석 유형" in f.screen.text, f.screen.text
 
     run(go())
+
+
+def test_ktx_only_does_not_hide_suseo_trains(env):
+    """옛 SRT 열차는 'KTX만' 필터에 걸려 빠질 수 있다. 수서 노선엔 고속열차만 다니니 필터를 뺀다."""
+    rail = FakeKorail([ktx_train(301, "053000", "080000", dep_name="수서")])
+    env.rails[(FAMILY, "KTX")] = rail
+    env.store.prefs(FAMILY)["ktx_only"] = True
+
+    async def go():
+        f = env.family
+        for dep, expect in (("수서", ktx.TrainType.ALL), ("서울", ktx.TrainType.KTX)):
+            await f.command("start")
+            await f.press("book:KTX")
+            await f.press(f"dep:{dep}")
+            await f.press("arr:부산")
+            await f.press(f"date:{day()}")
+            await f.press("time:05")
+            await f.press("search")
+            assert rail.last_params["train_type"] == expect, (dep, rail.last_params["train_type"])
+
+    run(go())
+    assert botmod.search_params("KTX", "대전", "동탄", day(), "050000", 1, True)["train_type"] == ktx.TrainType.ALL

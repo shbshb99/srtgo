@@ -50,7 +50,8 @@ def test_ktx_wrong_password_is_not_saved(env, monkeypatch):
     async def go():
         await p.command("settings")
         await p.press("acct")
-        assert "KTX: ⬜ 연결 안 됨" in p.screen.text
+        assert "코레일 계정 (KTX·SRT 통합)" in p.screen.text and "⬜ 연결 안 됨" in p.screen.text
+        assert "010-1234-5678처럼" in p.screen.text, "휴대폰 번호 하이픈 안내가 없음"
         await p.press("link:KTX")
         m1 = await p.say("010-1234-5678")
         m2 = await p.say("wrong-pw")
@@ -72,11 +73,11 @@ def test_link_success_saves_and_shows_name(env, monkeypatch):
         await p.press("link:KTX")
         await p.say("010-1234-5678")
         await p.say("good-pw")
-        assert "✅ KTX 계정을 연결했습니다 (김가족님)" in p.screen.text
+        assert "✅ 코레일 계정을 연결했습니다 (김가족님)" in p.screen.text
         assert botmod.Creds.get("400", "KTX") == ("010-1234-5678", "good-pw")
         assert "good-pw" not in env.path.read_text(), "비밀번호가 상태 파일에 들어감"
         await p.press("acct")
-        assert "KTX: ✅ 연결됨 (010*" in p.screen.text
+        assert "✅ 연결됨 (010*" in p.screen.text
         await p.press("unlink:KTX")
         await p.press("unlinkok:KTX")
         assert botmod.Creds.get("400", "KTX") == (None, None)
@@ -91,11 +92,11 @@ def test_pressing_a_button_cancels_pending_input(env):
     async def go():
         await p.command("settings")
         await p.press("acct")
-        await p.press("link:SRT")
+        await p.press("link:KTX")
         await p.press("acct")  # 취소
         msg = await p.say("아무 말")
         assert not msg.deleted and "버튼으로 조작" in p.screen.text
-        assert botmod.Creds.get("400", "SRT") == (None, None)
+        assert botmod.Creds.get("400", "KTX") == (None, None)
 
     run(go())
 
@@ -287,7 +288,7 @@ def test_owner_pays_and_cancels_from_reservation_list(env):
         o = env.owner
         await o.command("start")
         await o.press("rv:KTX")
-        assert "KTX 예매내역 (2건)" in o.screen.text
+        assert "예매내역 (2건)" in o.screen.text
         await o.press("1. ")
         await o.press("💳 카드로 결제")
         assert rail.paid == [], "확인 없이 결제함"
@@ -377,5 +378,25 @@ def test_group_chats_are_ignored(env):
         assert await env.bot._gate(up) is None
         assert env.store.status("-555") is None
         assert not env.tg.to(OWNER)
+
+    run(go())
+
+
+def test_old_srt_account_can_be_removed_and_is_not_offered(env):
+    """통합 뒤에는 SRT 계정을 새로 받지 않는다. 남아 있던 건 지울 수 있게 한다."""
+    p = new_user(env)
+    botmod.Creds.set("400", "SRT", "old-srt-id", "old-srt-pw")
+
+    async def go():
+        await p.command("settings")
+        await p.press("acct")
+        assert "link:SRT" not in p.screen.data()
+        assert "옛 SRT 계정이 남아 있습니다" in p.screen.text
+        await p.press("unlink:SRT")
+        await p.press("unlinkok:SRT")
+        assert botmod.Creds.get("400", "SRT") == (None, None)
+        await p.tap("link:SRT")  # 통합 전에 받은 버튼
+        assert "KTX로 통합" in p.screen.text
+        assert p.bot.context_for("400").awaiting is None
 
     run(go())

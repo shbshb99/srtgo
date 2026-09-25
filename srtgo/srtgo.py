@@ -81,6 +81,10 @@ STATIONS = {
     "KTX": [
         "서울",
         "용산",
+        # 2026년 9월 1일 SRT 가 KTX 로 통합돼, 옛 SRT 역도 코레일 계정으로 예매한다.
+        "수서",
+        "동탄",
+        "평택지제",
         "영등포",
         "광명",
         "수원",
@@ -90,6 +94,7 @@ STATIONS = {
         "서대전",
         "김천구미",
         "동대구",
+        "서대구",
         "경주",
         "포항",
         "밀양",
@@ -115,8 +120,11 @@ STATIONS = {
 }
 DEFAULT_STATIONS = {
     "SRT": ["수서", "대전", "동대구", "부산"],
-    "KTX": ["서울", "대전", "동대구", "부산"],
+    "KTX": ["서울", "수서", "대전", "동대구", "부산"],
 }
+# 옛 SRT 노선 역. 고속열차만 서므로 'KTX만' 필터를 걸 필요가 없고, 걸면 옛 SRT 열차가
+# 빠질 수 있다.
+SUSEO_LINE_STATIONS = ("수서", "동탄", "평택지제")
 
 # 예약 간격 (평균 간격 (초) = SHAPE * SCALE): gamma distribution (1.25 +/- 0.25 s)
 RESERVE_INTERVAL_SHAPE = 4
@@ -146,7 +154,7 @@ def srtgo(debug=False):
     ]
 
     RAIL_CHOICES = [
-        (colored("SRT", "red"), "SRT"),
+        (colored("SRT", "red") + " (9월부터 KTX로 통합: KTX에서 수서·동탄·평택지제 선택)", "SRT"),
         (colored("KTX", "cyan"), "KTX"),
         ("취소", -1),
     ]
@@ -677,7 +685,12 @@ def reserve(rail_type="SRT", debug=False):
             if is_srt
             else {
                 "include_no_seats": True,
-                **({"train_type": TrainType.KTX} if "ktx" in options else {}),
+                **(
+                    {"train_type": TrainType.KTX}
+                    if "ktx" in options
+                    and not {info["departure"], info["arrival"]} & set(SUSEO_LINE_STATIONS)
+                    else {}
+                ),
             }
         ),
     }
