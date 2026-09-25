@@ -17,5 +17,20 @@
 > [!WARNING]
 > All commercial and profit-making use of this program is strictly prohibited. Use of this program is at your own risk, and the developers of this program shall not be liable for any liability, including civil or criminal liability. By downloading this program, all users are deemed to agree to the above terms without any objection.
 
+## 텔레그램 봇 (이 포크에서 추가)
+터미널 없이 텔레그램 버튼으로 검색·대기·예매·결제·취소를 합니다. 운영PC에 한 번 설정해 두고 항상 켜 두는 용도입니다.
+
+> 2026년 9월 1일 SRT가 KTX로 통합돼, 봇은 **코레일 계정 하나로** KTX와 옛 SRT(수서·동탄·평택지제) 열차를 모두 예매합니다. SRT 앱은 회원 예매를 막았으므로 SRT 계정은 더 쓰지 않습니다. SRT만 쓰던 사람은 코레일+ 앱에서 코레일 회원(통합회원)으로 먼저 가입하세요.
+
+- 준비: `srtgo` 를 실행해 `텔레그램 설정`(봇 토큰, 내 chat_id)을 먼저 합니다. 오너 계정은 `로그인 설정`, 자동 결제를 쓰려면 `카드 설정`도 합니다.
+- 실행: `srtgo-bot` (또는 `srtgo` 메뉴의 `텔레그램 봇 시작`). 항상 켜 두려면 `srtgo-watchdog` 으로 띄웁니다. 창 없이 돌리려면 `pythonw -m srtgo.watchdog`.
+  워치독은 봇이 죽거나 멈추면(하트비트 끊김) 다시 띄웁니다. 봇은 재시작돼도 진행 중이던 대기를 이어갑니다.
+- 여러 사람: 모르는 사람이 말을 걸면 오너에게 승인 요청이 옵니다. 승인된 사람은 `⚙️ 설정 → 🔑 코레일 계정 연결`에서 자기 코레일 계정을 연결해 자기 예매만 합니다. 계정 메시지는 받자마자 지웁니다. 휴대폰 번호로 로그인할 때는 `010-1234-5678`처럼 하이픈을 넣습니다.
+- 결제: 카드는 오너 것만 PC에 있으므로, 카드 결제(자동 결제 포함)는 오너만 할 수 있습니다. 다른 사람은 코레일+ 앱에서 결제합니다.
+- 설정은 사람마다 따로: 자주 쓰는 역(⭐), 역 직접 추가, 승객 유형(어린이·경로·장애인), KTX만 검색.
+- 기록: `~/.srtgo/` (`SRTGO_HOME` 으로 변경) 에 `bot.log`, `watchdog.log`, `bot.console.log`, 상태 파일 `bot_state.json`(비밀번호는 없음, 계정은 OS 자격증명 저장소에만).
+- 같은 봇 토큰으로 두 곳에서 동시에 돌리면 안 됩니다 (버튼이 번갈아 먹통이 됨).
+
 ## Acknowledgments
 - This project includes code from [SRT](https://github.com/ryanking13/SRT) by ryanking13, licensed under the MIT License, and [korail2](https://github.com/carpedm20/korail2) by carpedm20, licensed under the BSD License.
+- `srtgo/dynapath.py` is adapted from [korail-mobile-api](https://github.com/yakisoba0728/korail-mobile-api) by yakisoba0728, licensed under the Apache License 2.0. See `NOTICE`.

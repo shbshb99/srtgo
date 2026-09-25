@@ -22,12 +22,22 @@ from Crypto.Util.Padding import pad
 from datetime import datetime, timedelta
 from functools import reduce
 
+from .dynapath import (
+    DYNAPATH_HEADER_NAME,
+    DynapathTokenSettings,
+    generate_dynapath_device_id,
+    generate_dynapath_token,
+)
+
 
 # Constants
 EMAIL_REGEX = re.compile(r"[^@]+@[^@]+\.[^@]+")
 PHONE_NUMBER_REGEX = re.compile(r"(\d{3})-(\d{3,4})-(\d{4})")
 
-USER_AGENT = "Dalvik/2.1.0 (Linux; U; Android 14; SM-S912N Build/UP1A.231005.007)"
+USER_AGENT = "Dalvik/2.1.0 (Linux; U; Android 15; Android)"
+
+# 응답 없이 매달려 있지 않도록: 넘기면 실패시키고 다음 시도에서 재요청한다.
+REQUEST_TIMEOUT = 30
 
 DEFAULT_HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -421,7 +431,7 @@ class NetFunnelHelper:
 
     def __init__(self):
         if HAS_CURL_CFFI:
-            self._session = curl_cffi.Session(impersonate="chrome131_android")
+            self._session = curl_cffi.Session(impersonate="chrome131_android", timeout=REQUEST_TIMEOUT)
         else:
             self._session = requests.session()
         self._session.headers.update(self.DEFAULT_HEADERS)
@@ -510,18 +520,23 @@ class Korail:
 
     def __init__(self, korail_id, korail_pw, auto_login=True, verbose=False):
         if HAS_CURL_CFFI:
-            self._session = curl_cffi.Session(impersonate="chrome131_android")
+            self._session = curl_cffi.Session(impersonate="chrome131_android", timeout=REQUEST_TIMEOUT)
         else:
             self._session = requests.session()
         self._session.headers.update(DEFAULT_HEADERS)
         self._device = "AD"
-        self._version = "240531001"
+        self._version = "250601003"
         self._key = "korail1234567890"
         self._idx = None
+        self._dynapath_device_id = generate_dynapath_device_id()
+        self._dynapath_app_start_ts = str(int(time.time() * 1000))
         self.korail_id = korail_id
         self.korail_pw = korail_pw
         self.verbose = verbose
         self.logined = False
+        # 로그인 실패 사유(코레일 응답의 h_msg_txt). login()은 실패해도 예외를 던지지
+        # 않으므로, 호출하는 쪽이 logined 와 함께 이걸 보고 실패를 알아야 한다.
+        self.login_error = None
         self.membership_number = None
         self.name = None
         self.email = None
@@ -532,6 +547,13 @@ class Korail:
     def _log(self, msg: str) -> None:
         if self.verbose:
             print(f"[*] {msg}")
+
+    def _dynapath_header(self) -> dict:
+        settings = DynapathTokenSettings(
+            device_id=self._dynapath_device_id,
+            app_start_ts=self._dynapath_app_start_ts,
+        )
+        return {DYNAPATH_HEADER_NAME: generate_dynapath_token(settings)}
 
     def __enc_password(self, password):
         url = API_ENDPOINTS["code"]
@@ -575,7 +597,9 @@ class Korail:
             "idx": self._idx,
         }
 
-        r = self._session.post(API_ENDPOINTS["login"], data=data)
+        r = self._session.post(
+            API_ENDPOINTS["login"], data=data, headers=self._dynapath_header()
+        )
         self._log(r.text)
         j = json.loads(r.text)
 
@@ -589,8 +613,10 @@ class Korail:
                 f"로그인 성공: {self.name} (멤버십번호: {self.membership_number}, 전화번호: {self.phone_number})"
             )
             self.logined = True
+            self.login_error = None
             return True
         self.logined = False
+        self.login_error = j.get("h_msg_txt") or "코레일 로그인 실패 (사유 미상)"
         return False
 
     def logout(self):
@@ -669,7 +695,9 @@ class Korail:
             "mbCrdNo": self.membership_number,
         }
 
-        r = self._session.get(API_ENDPOINTS["search_schedule"], params=data)
+        r = self._session.get(
+            API_ENDPOINTS["search_schedule"], params=data, headers=self._dynapath_header()
+        )
         self._log(r.text)
         j = json.loads(r.text)
 
@@ -757,7 +785,9 @@ class Korail:
         for i, psg in enumerate(passengers, 1):
             data.update(psg.get_dict(i))
 
-        r = self._session.get(API_ENDPOINTS["reserve"], params=data)
+        r = self._session.get(
+            API_ENDPOINTS["reserve"], params=data, headers=self._dynapath_header()
+        )
         self._log(r.text)
         j = json.loads(r.text)
         if self._result_check(j):
@@ -853,17 +883,22 @@ class Korail:
         r = self._session.get(API_ENDPOINTS["myreservationlist"], params=data)
         self._log(r.text)
         j = json.loads(r.text)
+        # 항상 (좌석 목록, wct_no) 를 돌려준다. 예전처럼 None 을 돌려주면 받는 쪽
+        # (reservations)의 언패킹이 터져서, 서버에선 이미 잡힌 예약이 예외로 끝나
+        # '예약 실패'로 보이고 다시 예약하게 된다 (중복 예매). 예약대기처럼 좌석이
+        # 아직 없는 예약에서 이 경로를 탄다.
         try:
             if not self._result_check(j):
-                return []
+                return [], None
 
             wct_no = j.get("h_wct_no")
             if jrny_info := j.get("jrny_infos", {}).get("jrny_info", []):
                 if seat_info := jrny_info[0].get("seat_infos", {}).get("seat_info", []):
                     return [Seat(seat) for seat in seat_info], wct_no
+            return [], wct_no
 
         except NoResultsError:
-            return None
+            return [], None
 
     def pay_with_card(
         self,

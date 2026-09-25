@@ -19,6 +19,9 @@ dependencies = [
     "curl_cffi",
     "requests",
     "inquirer>=3.4",
+    # blessed 1.40+ 는 켜질 때 터미널에 기능 질의를 보내는데, 윈도 기본 콘솔은 이걸 못 알아듣고
+    # 'P+q544e...' 같은 글자로 화면에 찍는다. 질의가 없던 마지막 버전대로 묶어 둔다.
+    "blessed>=1.19,<1.40",
     "keyring",
     "PyCryptodome",
     "prompt_toolkit>=3",
@@ -33,3 +36,5 @@ Homepage = "https://github.com/lapis42/srtgo"
 
 [project.scripts]
 srtgo = "srtgo.srtgo:srtgo"
+srtgo-bot = "srtgo.bot:main"
+srtgo-watchdog = "srtgo.watchdog:main"
