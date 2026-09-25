@@ -3,6 +3,7 @@ import asyncio
 import pathlib
 import sys
 import time
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
@@ -31,11 +32,13 @@ def ctx():
 
 
 def make_session():
+    # 출발일은 항상 미래로. 지난 날짜면 만료 처리가 먼저 걸려 루프가 끝난다.
+    day = (datetime.now() + timedelta(days=1)).strftime("%Y%m%d")
     s = botmod.Session()
     s.rail_type, s.dep, s.arr = "KTX", "용산", "여수EXPO"
-    s.date, s.time = "20260924", "190000"
+    s.date, s.time = day, "190000"
     s.seat_option = "GENERAL_FIRST"
-    s.selected = [("527", "20260924", "200900")]
+    s.selected = [("527", day, "200900")]
     s.started_at = time.time()
     return s
 
@@ -123,3 +126,50 @@ async def run():
 
 asyncio.run(run())
 print("\n=== 복원력 전부 통과 ===")
+
+
+async def run_expiry():
+    """떠난 열차를 계속 쫓지 않는지."""
+    fk = FakeKeyring()
+    with patch.object(botmod, "keyring", fk), patch.object(
+        botmod, "get_options", return_value=[]
+    ):
+        bot = botmod.Bot("1")
+        u = bot.context_for("1")
+
+        rail = MagicMock()
+        rail.search_train = MagicMock(return_value=[])
+
+        # 이미 떠난 열차
+        s = make_session()
+        s.selected = [("527", "20200101", "200900")]
+        c = ctx()
+        with patch.object(botmod, "build_rail", return_value=rail):
+            await bot._reserve_loop(c, u, s)
+        sent = " ".join(str(k) for k in c.bot.send_message.call_args_list)
+        assert "모두 출발해 대기를 종료" in sent, sent
+        assert rail.search_train.call_count == 0, "떠난 열차를 조회함"
+        print("OK: 이미 떠난 열차는 조회도 안 하고 즉시 종료 + 알림")
+
+        # 아직 안 떠난 열차는 계속 돈다
+        future = datetime.now() + timedelta(days=1)
+        s2 = make_session()
+        s2.selected = [("527", future.strftime("%Y%m%d"), "200900")]
+        c2 = ctx()
+        with patch.object(botmod, "build_rail", return_value=rail):
+            t = asyncio.create_task(bot._reserve_loop(c2, u, s2))
+            await asyncio.sleep(1.0)
+            assert not t.done(), "아직 안 떠났는데 종료됨"
+            assert rail.search_train.call_count > 0
+            t.cancel()
+        print("OK: 출발 전 열차는 계속 감시")
+
+        # 출발시각을 못 읽으면 종료하지 않는다 (섣불리 끄지 않음)
+        s3 = make_session()
+        s3.selected = [("527", "", "")]
+        assert botmod.last_departure(s3.selected) is None
+        print("OK: 출발시각 불명이면 종료하지 않음")
+
+
+asyncio.run(run_expiry())
+print("=== 만료 처리 통과 ===")

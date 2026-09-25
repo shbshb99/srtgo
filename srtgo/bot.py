@@ -271,6 +271,17 @@ def train_key(train):
     )
 
 
+def last_departure(selected):
+    """감시 중인 열차 중 가장 늦게 떠나는 시각. 알 수 없으면 None."""
+    times = []
+    for _, dep_date, dep_time in selected:
+        try:
+            times.append(datetime.strptime(dep_date + dep_time, "%Y%m%d%H%M%S"))
+        except ValueError:
+            continue
+    return max(times) if times else None
+
+
 def keyboard(rows):
     return InlineKeyboardMarkup(
         [
@@ -373,6 +384,21 @@ class Bot:
             return
         await update.message.reply_text(
             "srtgo 봇입니다. 무엇을 할까요?", reply_markup=main_menu(u)
+        )
+
+    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        u = await self._gate(update, context)
+        if u is None:
+            return
+        await update.message.reply_text(
+            "🚄 srtgo 봇\n\n"
+            "/start — 메뉴 열기 (예매·예매내역·계정 연결)\n"
+            "/status — 지금 감시 중인 대기 상황\n"
+            "/stop — 대기 중지\n"
+            "/help — 이 도움말\n\n"
+            "자리가 나면 자동으로 예매하고 알려드립니다. "
+            "오류가 나도 멈추지 않고 계속 재시도합니다.",
+            reply_markup=main_menu(u),
         )
 
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -902,8 +928,20 @@ class Bot:
         wanted = set(s.selected)
         errors_since_notify = 0
 
+        deadline = last_departure(s.selected)
+
         while True:
             try:
+                # 떠난 열차는 영영 안 잡힌다. 모르고 며칠을 도는 일이 없도록 끝낸다.
+                if deadline and datetime.now() > deadline:
+                    await self._try_send(
+                        context,
+                        u.chat_id,
+                        f"🛑 감시하던 열차가 모두 출발해 대기를 종료합니다.\n"
+                        f"({s.dep}~{s.arr}, {deadline.strftime('%m/%d %H:%M')} 출발)",
+                    )
+                    return
+
                 s.tries += 1
                 trains = await asyncio.to_thread(rail.search_train, **params)
                 for train in trains:
@@ -998,6 +1036,7 @@ def main():
     bot = Bot(chat_id)
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", bot.start))
+    app.add_handler(CommandHandler("help", bot.help))
     app.add_handler(CommandHandler("status", bot.status))
     app.add_handler(CommandHandler("stop", bot.stop))
     app.add_handler(CallbackQueryHandler(bot.on_button))

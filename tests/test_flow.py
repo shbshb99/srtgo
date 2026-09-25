@@ -2,10 +2,14 @@
 import asyncio
 import sys
 import time
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 from srtgo import bot as botmod
+
+# 고정 날짜를 쓰면 그 날이 지나는 순간 테스트가 썩는다.
+DAY = (datetime.now() + timedelta(days=2)).strftime("%Y%m%d")
 
 
 class FakeKeyring:
@@ -25,7 +29,7 @@ class FakeKeyring:
 class FakeTrain:
     def __init__(self, no, seat=False):
         self.train_no = no
-        self.dep_date = "20260924"
+        self.dep_date = DAY
         self.dep_time = "200900"
         self._seat = seat
 
@@ -42,7 +46,7 @@ class FakeTrain:
         return False
 
     def __str__(self):
-        return f"[KTX {self.train_no}] 09/24 20:09~23:12 용산~여수EXPO"
+        return f"[KTX {self.train_no}] 20:09~23:12 용산~여수EXPO"
 
 
 class FakeReservation:
@@ -138,7 +142,7 @@ async def run():
             await bot._on_arr(x, c, "여수EXPO", u)
             assert any(b.startswith("date:") for b in buttons(x))
             x = q()
-            await bot._on_date(x, c, "20260924", u)
+            await bot._on_date(x, c, DAY, u)
             x = q()
             await bot._on_time(x, c, "190000", u)
             assert "어린이" in " ".join(labels(x))
@@ -168,7 +172,7 @@ async def run():
             print("OK: 검색 -> 열차 목록")
 
             await bot._on_toggle(q(), c, "0", u)
-            assert u.session.selected == [("527", "20260924", "200900")]
+            assert u.session.selected == [("527", DAY, "200900")]
             await bot._on_toggle(q(), c, "0", u)
             assert u.session.selected == []
             await bot._on_toggle(q(), c, "0", u)
@@ -237,16 +241,22 @@ async def run():
         broken = Broken([])
         s = botmod.Session()
         s.rail_type, s.dep, s.arr = "KTX", "용산", "여수EXPO"
-        s.date, s.time = "20260924", "190000"
+        s.date, s.time = DAY, "190000"
         s.seat_option = "GENERAL_FIRST"
-        s.selected = [("527", "20260924", "200900")]
+        s.selected = [("527", DAY, "200900")]
         s.started_at = time.time()
         c2 = ctx()
+        # 간격은 backoff 때문에 들쭉날쭉하다. 여기서 보려는 건 타이밍이 아니라
+        # "오류가 나도 계속 재시도하고 알린다"는 동작이므로 간격을 고정한다.
         with patch.object(botmod, "build_rail", return_value=broken), patch.object(
             botmod, "get_options", return_value=[]
+        ), patch.object(
+            botmod.Bot, "_backoff", staticmethod(lambda n: 0.05)
+        ), patch.object(
+            botmod.Bot, "_interval", staticmethod(lambda: 0.05)
         ):
             t = asyncio.create_task(bot._reserve_loop(c2, u, s))
-            await asyncio.sleep(3.0)
+            await asyncio.sleep(0.5)
             assert not t.done(), "오류로 루프가 죽음"
             assert broken.searches > 1
             assert c2.bot.send_message.await_count >= 1
