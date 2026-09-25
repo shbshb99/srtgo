@@ -161,7 +161,11 @@ def main():
                 time.sleep(60)
                 continue
             if code != 0 and ran < 30:
-                log.warning("봇이 곧바로 죽었습니다. 원인은 %s 에 있습니다.", home / "bot.console.log")
+                log.warning(
+                    "봇이 곧바로 죽었습니다. 원인은 %s 또는 %s 에 있습니다.",
+                    home / "bot.log",
+                    home / "bot.console.log",
+                )
             # 한동안 멀쩡히 돌다 죽었으면 바로 다시 띄우고, 뜨자마자 죽기를
             # 반복하면 그때마다 간격을 두 배로 늘린다.
             if ran >= HEALTHY_RUN_SECONDS:
