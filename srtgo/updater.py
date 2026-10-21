@@ -31,6 +31,12 @@ UPDATE_BASES = [
     f"https://raw.githubusercontent.com/{REPO}/claude/srtgo-ktx-compatibility-7gczbc/updates/",
 ]
 MANIFEST = "latest.json"
+# latest.json 은 먼저 GitHub API 로 읽는다. raw.githubusercontent.com 은 몇 분씩 옛 내용을
+# 보여 줘서, 방금 올린 새 버전을 '최신입니다'로 놓친다.
+MANIFEST_API = {
+    base: f"https://api.github.com/repos/{REPO}/contents/updates/{MANIFEST}?ref={branch}"
+    for base, branch in zip(UPDATE_BASES, ["main", "claude/srtgo-ktx-compatibility-7gczbc"])
+}
 CHECK_EVERY_SECONDS = 30 * 60
 FIRST_CHECK_AFTER_SECONDS = 60
 HTTP_TIMEOUT = 30
@@ -102,7 +108,10 @@ def package_dir() -> Path:
 
 
 def http_get(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "srtgo-updater", "Cache-Control": "no-cache"})
+    headers = {"User-Agent": "srtgo-updater", "Cache-Control": "no-cache"}
+    if url.startswith("https://api.github.com/"):
+        headers["Accept"] = "application/vnd.github.raw+json"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
         return r.read()
 
@@ -153,13 +162,14 @@ class Updater:
         """읽을 수 있는 첫 latest.json 과 그 폴더 주소. 하나도 못 읽으면 (None, None)."""
         errors = []
         for base in UPDATE_BASES:
-            try:
-                m = json.loads(self.get(base + MANIFEST))
-            except Exception as ex:
-                errors.append(f"{base}: {ex}")
-                continue
-            if isinstance(m, dict):
-                return m, base
+            for url in (MANIFEST_API[base], base + MANIFEST):
+                try:
+                    m = json.loads(self.get(url))
+                except Exception as ex:
+                    errors.append(f"{url}: {ex}")
+                    continue
+                if isinstance(m, dict):
+                    return m, base
         self.log.info("업데이트 확인 실패 (다음에 다시): %s", "; ".join(errors))
         return None, None
 

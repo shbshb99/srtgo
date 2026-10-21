@@ -39,12 +39,17 @@ class Env:
         self.pip_code = pip_code
         self.downloads = []
         self.installed = []
+        self.api_release = None
         self.u = up.Updater(
             self.home, LOG, get=self.get, pip=self.pip, current=lambda: self.version, pkg_dir=lambda: self.pkg
         )
         self.u.next_check = 0
 
     def get(self, url):
+        if url.startswith("https://api.github.com/"):
+            if self.api_release is None:
+                raise OSError("rate limited")
+            return json.dumps(self.api_release).encode()
         if url.endswith(up.MANIFEST):
             if url.startswith(up.UPDATE_BASES[0]):
                 raise OSError("404")  # main 에는 아직 없다 -> 다음 주소로
@@ -217,3 +222,11 @@ def test_results_are_recorded_for_the_owner(tmp_path):
     e2.u.install(*e2.u.find_update())
     e2.u.after_run(ran_seconds=1, code=1, healthy_after=120)
     assert up.read_json(e2.home / up.RESULT_FILE)["status"] == "rolled_back"
+
+
+def test_manifest_prefers_github_api_over_stale_raw_cache(tmp_path):
+    e = Env(tmp_path, rel=release("2.2.2+ktx.10"))  # raw 는 아직 옛 내용
+    e.api_release = release("2.2.2+ktx.11")  # API 는 방금 올린 내용
+    info = e.u.check()
+    assert info and info["version"] == "2.2.2+ktx.11"
+    assert info["base"] == up.UPDATE_BASES[0]
