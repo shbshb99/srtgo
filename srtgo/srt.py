@@ -17,6 +17,9 @@ from typing import Dict, List, Pattern
 EMAIL_REGEX: Pattern = re.compile(r"[^@]+@[^@]+\.[^@]+")
 PHONE_NUMBER_REGEX: Pattern = re.compile(r"(\d{3})-(\d{3,4})-(\d{4})")
 
+# 응답 없이 매달려 있지 않도록: 넘기면 실패시키고 다음 시도에서 재요청한다.
+REQUEST_TIMEOUT = 30
+
 USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 15; SM-S912N Build/AP3A.240905.015.A2; wv) AppleWebKit/537.36"
     "(KHTML, like Gecko) Version/4.0 Chrome/136.0.7103.125 Mobile Safari/537.36SRT-APP-Android V.2.0.38"
@@ -530,7 +533,7 @@ class NetFunnelHelper:
 
     def __init__(self, debug=False):
         if HAS_CURL_CFFI:
-            self._session = curl_cffi.Session(impersonate="chrome")
+            self._session = curl_cffi.Session(impersonate="chrome", timeout=REQUEST_TIMEOUT)
         else:
             self._session = requests.session()
         self._session.headers.update(self.DEFAULT_HEADERS)
@@ -650,7 +653,7 @@ class SRT:
         self, srt_id: str, srt_pw: str, auto_login: bool = True, verbose: bool = False
     ) -> None:
         if HAS_CURL_CFFI:
-            self._session = curl_cffi.Session(impersonate="chrome")
+            self._session = curl_cffi.Session(impersonate="chrome", timeout=REQUEST_TIMEOUT)
         else:
             self._session = requests.session()
         self._session.headers.update(DEFAULT_HEADERS)
