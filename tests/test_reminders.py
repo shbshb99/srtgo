@@ -338,3 +338,24 @@ def test_home_shows_waiting_count(env):
         assert "rm" in env.owner.screen.data()
 
     run(go())
+
+
+def test_register_after_apply_deadline_says_so(env):
+    """신청 마감이 지난 열차를 등록하면 지난 날짜를 신청하라고 하지 않고 마감이 지났다고 알린다."""
+
+    async def go():
+        await add(env.owner, date=day(1))  # 내일 출발 = 신청 마감은 이미 지났다
+        text = env.owner.screen.text
+        assert "이미 지나" in text and "신청하세요" not in text, text
+        assert "취소표" in text
+        assert one(env).state == "등록"
+
+    run(go())
+
+
+def test_register_before_apply_deadline_asks_to_apply(env):
+    async def go():
+        await add(env.owner, date=day(10))
+        assert "신청하세요" in env.owner.screen.text and "이미 지나" not in env.owner.screen.text
+
+    run(go())
