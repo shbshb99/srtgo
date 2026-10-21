@@ -2852,11 +2852,19 @@ class Bot(OpsMixin):
         u.reminders[m.id] = m
         u.save_reminders()
         log.info("%s: 예약대기 등록 %s — %s", u.chat_id, m.id, m.headline())
-        await self.show_reminders(
-            r,
-            note=f"등록했습니다. {fmt_date(m.apply_due().strftime('%Y%m%d'))}까지 "
-            "코레일+ 앱이나 홈페이지에서 예약대기를 신청하세요.",
-        )
+        if kst_now() > m.apply_due():
+            # 이미 마감이 지난 열차: 지난 날짜를 신청하라고 안내하면 안 된다.
+            note = (
+                "등록했습니다. 다만 예약대기 신청 마감("
+                f"{fmt_date(m.apply_due().strftime('%Y%m%d'))})이 이미 지나 이 열차는 예약대기를 걸 수 없습니다.\n"
+                "코레일+ 앱에서 취소표가 나오는지 직접 확인하세요. 출발 전날 아침에 한 번 더 알려 드립니다."
+            )
+        else:
+            note = (
+                f"등록했습니다. {fmt_date(m.apply_due().strftime('%Y%m%d'))}까지 "
+                "코레일+ 앱이나 홈페이지에서 예약대기를 신청하세요."
+            )
+        await self.show_reminders(r, note=note)
 
     async def btn_rmopen(self, r, rid):
         u = r.u
