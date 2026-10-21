@@ -43,6 +43,7 @@ from telegram.ext import (
     filters,
 )
 
+from . import korail_version
 from .ktx import (
     AdultPassenger,
     ChildPassenger,
@@ -84,7 +85,7 @@ from .srtgo import (
     get_telegram_credentials,
     pay_card,
 )
-from .watchdog import EXIT_ALREADY_RUNNING, acquire_lock, data_dir
+from .watchdog import EXIT_ALREADY_RUNNING, RESTART_REQUEST_FILE, acquire_lock, data_dir
 
 log = logging.getLogger("srtgo.bot")
 
@@ -2694,7 +2695,17 @@ class Bot:
 
     async def _heartbeat(self, app):
         """워치독이 보는 생존 신호. 텔레그램 수신이 멈췄으면 쓰지 않아 재시작되게 한다."""
+        restart_request = self.heartbeat_path.with_name(RESTART_REQUEST_FILE)
         while True:
+            if restart_request.exists():
+                # 워치독이 업데이트하려고 끄라고 했다. 대기는 저장돼 있어 다시 켜지면 이어간다.
+                try:
+                    restart_request.unlink()
+                except OSError:
+                    pass
+                log.info("워치독 요청으로 봇을 종료합니다 (업데이트)")
+                app.stop_running()
+                return
             updater = getattr(app, "updater", None)
             if updater is None or updater.running:
                 try:
@@ -2711,8 +2722,30 @@ class Bot:
             log.warning("명령어 메뉴 등록 실패: %s", ex)
         if self.heartbeat_path is not None:
             self._heartbeat_task = asyncio.create_task(self._heartbeat(app))
+        self._watch_korail_version()
         await self.resume_watches()
         log.info("봇 준비 완료")
+
+    def _watch_korail_version(self):
+        """코레일 앱 버전이 자동으로 바뀌거나 못 찾았을 때 오너에게 알린다 (스레드에서 불린다)."""
+        loop = asyncio.get_running_loop()
+
+        def notify(found, blocked):
+            if found:
+                text = (
+                    f"🔧 코레일이 옛 앱 버전({blocked[0]})을 막아서 {found[0]}(으)로 자동 변경했습니다.\n"
+                    "따로 할 일은 없습니다."
+                )
+            else:
+                text = (
+                    f"⚠️ 코레일이 앱 버전 {blocked[0]}을(를) 막았는데, 통과하는 버전을 자동으로 찾지 못했습니다.\n"
+                    "30분 뒤 다시 찾습니다. 계속 안 되면 프로그램 업데이트가 필요합니다."
+                )
+            if loop.is_closed():
+                return
+            asyncio.run_coroutine_threadsafe(self._send(self.owner_id, text), loop)
+
+        korail_version.listeners[:] = [notify]
 
     async def shutdown(self, app=None):
         """꺼질 때: 대기는 저장해 둔 채 멈춘다 (다음에 켜지면 이어간다)."""

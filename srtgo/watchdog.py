@@ -20,6 +20,8 @@ import sys
 import time
 from pathlib import Path
 
+from .updater import Updater
+
 # 봇은 20초마다 하트비트를 쓴다. 이만큼 끊기면 멈춘 것으로 본다.
 HEARTBEAT_STALE_SECONDS = 180
 # 막 뜬 봇은 텔레그램 연결·대기 복원에 시간이 걸린다. 그동안은 하트비트를 안 본다.
@@ -31,6 +33,8 @@ MAX_BACKOFF_SECONDS = 300
 POLL_SECONDS = 5
 # bot.py 와 맞춘 종료 코드: 다른 봇이 이미 돌고 있음.
 EXIT_ALREADY_RUNNING = 3
+# 이 파일이 생기면 봇이 스스로 깔끔하게 꺼진다 (업데이트 설치 전에 쓴다).
+RESTART_REQUEST_FILE = "restart.request"
 BOT_COMMAND = [sys.executable, "-m", "srtgo.bot"]
 CONSOLE_LOG_MAX_BYTES = 2_000_000
 
@@ -97,7 +101,28 @@ def open_console_log(home: Path):
     return open(path, "ab")
 
 
-def run_once(log, heartbeat: Path):
+UPDATE_REASON = "업데이트 설치"
+# 업데이트하려고 끄라고 한 뒤 이만큼 기다려도 안 꺼지면 강제로 끈다.
+GRACEFUL_STOP_SECONDS = 120
+
+
+def stop_for_update(log, proc, heartbeat: Path) -> None:
+    """봇에게 스스로 꺼지라고 하고(대기를 저장하고 끝내도록) 기다린다."""
+    request = heartbeat.with_name(RESTART_REQUEST_FILE)
+    request.write_text(str(time.time()))
+    try:
+        proc.wait(timeout=GRACEFUL_STOP_SECONDS)
+    except subprocess.TimeoutExpired:
+        log.warning("봇이 %d초 안에 꺼지지 않아 강제 종료합니다.", GRACEFUL_STOP_SECONDS)
+        proc.kill()
+        proc.wait()
+    try:
+        request.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def run_once(log, heartbeat: Path, updater=None):
     """봇을 한 번 띄우고 끝날 때까지 지켜본다. (종료 코드, 실행 시간, 강제종료 사유)."""
     try:
         heartbeat.unlink()
@@ -115,12 +140,24 @@ def run_once(log, heartbeat: Path):
     log.info("봇 시작 (pid %s)", proc.pid)
 
     reason = None
+    confirmed = False
     try:
         while proc.poll() is None:
             time.sleep(POLL_SECONDS)
             if time.time() - started < STARTUP_GRACE_SECONDS:
                 continue
             age = heartbeat_age(heartbeat)
+            if updater is not None and age is not None and age <= HEARTBEAT_STALE_SECONDS:
+                if not confirmed:
+                    updater.confirm()  # 막 설치한 버전이 잘 떴다
+                    confirmed = True
+                if updater.due():
+                    found = updater.find_update()
+                    if found:
+                        log.warning("새 버전 %s 설치를 위해 봇을 잠시 끕니다.", found[0])
+                        stop_for_update(log, proc, heartbeat)
+                        updater.install(*found)
+                        return proc.wait(), time.time() - started, UPDATE_REASON
             if age is None or age > HEARTBEAT_STALE_SECONDS:
                 reason = "하트비트 없음" if age is None else f"하트비트 {int(age)}초째 끊김"
                 log.warning("봇이 응답하지 않아 강제 종료합니다: %s", reason)
@@ -149,10 +186,15 @@ def main():
 
     heartbeat = home / "heartbeat"
     backoff = MIN_BACKOFF_SECONDS
-    log.info("워치독 시작 (기록: %s)", home)
+    updater = Updater(home, log)
+    log.info("워치독 시작 (기록: %s, 자동 업데이트 %s)", home, "켜짐" if updater.enabled() else "꺼짐")
     try:
         while True:
-            code, ran, reason = run_once(log, heartbeat)
+            code, ran, reason = run_once(log, heartbeat, updater)
+            if reason == UPDATE_REASON:
+                backoff = MIN_BACKOFF_SECONDS
+                continue
+            updater.after_run(ran, code, STARTUP_GRACE_SECONDS)
             if code == EXIT_ALREADY_RUNNING:
                 log.warning(
                     "이 PC에서 다른 봇이 이미 실행 중입니다 (srtgo 메뉴에서 켠 봇 등). "

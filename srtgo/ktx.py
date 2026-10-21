@@ -15,15 +15,14 @@ except ImportError:
     HAS_CURL_CFFI = False
 import itertools
 import json
-import os
 import re
 import time
-from pathlib import Path
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from datetime import datetime, timedelta
 from functools import reduce
 
+from . import korail_version
 from .dynapath import (
     DYNAPATH_HEADER_NAME,
     DynapathTokenSettings,
@@ -49,21 +48,14 @@ DEFAULT_HEADERS = {
     "Accept-Encoding": "gzip",
 }
 
-# 코레일 앱 버전. 서버가 옛 버전을 막으면("최신 버전으로 업데이트해 주세요", -8204)
-# 다시 설치하지 않아도 되게 ~/.srtgo/korail.json 의 {"app_version": "...", "version": "..."} 로
-# 덮어쓸 수 있다. 파일이 없거나 깨져 있으면 아래 기본값을 쓴다.
+# 코레일 앱 버전 기본값. ~/.srtgo/korail.json 의 {"app_version", "version"} 이 있으면 그걸 쓴다.
+# 서버가 옛 버전을 막으면(-8204) korail_version 이 맞는 값을 찾아 그 파일에 저장한다.
 KORAIL_APP_VERSION = "7.0.8"
 KORAIL_API_VERSION = "250601003"
 
 
 def korail_versions() -> tuple[str, str]:
-    path = Path(os.environ.get("SRTGO_HOME") or Path.home() / ".srtgo") / "korail.json"
-    try:
-        conf = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        conf = {}
-    if not isinstance(conf, dict):
-        conf = {}
+    conf = korail_version.load_config()
     app = str(conf.get("app_version") or KORAIL_APP_VERSION).strip()
     api = str(conf.get("version") or KORAIL_API_VERSION).strip()
     return app, api
@@ -547,12 +539,15 @@ class NetFunnelHelper:
 class Korail:
     """Main Korail API interface"""
 
-    def __init__(self, korail_id, korail_pw, auto_login=True, verbose=False):
+    def __init__(self, korail_id, korail_pw, auto_login=True, verbose=False, version_guard=True):
         if HAS_CURL_CFFI:
             self._session = curl_cffi.Session(impersonate="chrome131_android", timeout=REQUEST_TIMEOUT)
         else:
             self._session = requests.session()
         self._session.headers.update(DEFAULT_HEADERS)
+        if version_guard:
+            # -8204(옛 앱 버전)면 맞는 버전을 찾아 저장하고 다시 보낸다.
+            self._session = korail_version.GuardedSession(self._session, self)
         self._device = "AD"
         # Version(API 계약)과 AppVersion(앱 버전)이 낮으면 서버가 -8204로 막는다.
         self._app_version, self._version = korail_versions()
