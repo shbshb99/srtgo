@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2+ktx.16",
-  "wheel": "srtgo-2.2.2+ktx.16-py3-none-any.whl",
-  "sha256": "f7e15f3aba75d33b9099a7d770d18835d97b146f0dc05b3acb8c11d7382c3ad5",
-  "notes": "새 버전을 올리자마자 '지금 확인'에서 바로 보이게 했습니다. (ktx.15 내용 포함: 코레일에 막히면 수백 번 조회하지 않고 바로 멈춤)"
+  "version": "2.2.2+ktx.17",
+  "wheel": "srtgo-2.2.2+ktx.17-py3-none-any.whl",
+  "sha256": "cdf0bd5f92ee7b1a7bdc0ad48cb8c3dce2b86eedbe9df7051d1a19d8dff6f9a2",
+  "notes": "업데이트할 때 봇이 바로 꺼졌다 켜지게 고쳤습니다 (전엔 몇 분 걸릴 수 있었음). 새 버전 확인도 바로 보이게 했습니다."
 }
