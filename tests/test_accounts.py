@@ -75,7 +75,7 @@ def test_link_success_saves_and_shows_name(env, monkeypatch):
         await p.say("good-pw")
         assert "✅ 코레일 계정을 연결했습니다 (김가족님)" in p.screen.text
         assert botmod.Creds.get("400", "KTX") == ("010-1234-5678", "good-pw")
-        assert "good-pw" not in env.path.read_text(), "비밀번호가 상태 파일에 들어감"
+        assert "good-pw" not in env.path.read_text(encoding="utf-8"), "비밀번호가 상태 파일에 들어감"
         await p.press("acct")
         assert "✅ 연결됨 (010*" in p.screen.text
         await p.press("unlink:KTX")
@@ -342,7 +342,7 @@ def test_revoke_stops_watches_and_clears_accounts(env):
         assert "엄마" in o.screen.text and "대기 1건" in o.screen.text
         await o.press(f"revoke:{FAMILY}")
         await o.press(f"revokeok:{FAMILY}")
-        assert not u.watches and json.loads(env.path.read_text())["watches"] == {}
+        assert not u.watches and json.loads(env.path.read_text(encoding="utf-8"))["watches"] == {}
         assert botmod.Creds.get(FAMILY, "KTX") == (None, None)
         assert env.store.status(FAMILY) == "denied"
         assert "사용 권한이 해제되었습니다" in env.tg.texts(FAMILY)
@@ -364,7 +364,7 @@ def test_old_keyring_user_list_is_migrated(fake_keyring, tmp_path):
     store = botmod.StateStore(tmp_path / "s.json")
     botmod.migrate_users(store)
     assert store.status("200") == "approved"
-    assert json.loads((tmp_path / "s.json").read_text())["users"]["200"]["name"] == "엄마"
+    assert json.loads((tmp_path / "s.json").read_text(encoding="utf-8"))["users"]["200"]["name"] == "엄마"
 
 
 def test_group_chats_are_ignored(env):

@@ -154,6 +154,17 @@ PERSIST_EVERY_TRIES = 100
 HEARTBEAT_SECONDS = 20
 APPROVAL_RESEND_SECONDS = 12 * 3600
 
+# --- 예약대기 챙기기 -------------------------------------------------------
+# 코레일 공식 '예약대기'의 기한만 챙긴다. 코레일에 접속하지 않으므로 매크로로 걸릴 일이 없다.
+MAX_REMINDERS_PER_USER = 10
+# 신청 마감: 출발 2일 전.
+APPLY_DEADLINE_DAYS = 2
+# 배정분 결제 기한: 배정 당일 18시 (코레일 승차권 안내 기준). 배정 문자에 다른 시각이
+# 적혀 있으면 건별로 고칠 수 있다.
+PAY_DEADLINE_DEFAULT = "1800"
+# 기한이 지난 뒤 '놓쳤다'고 알리는 기간. 이보다 지난 건 조용히 정리한다.
+MISS_NOTICE_WITHIN = timedelta(hours=24)
+
 STORE_SERVICE = "srtgo-bot"  # 예전 버전이 승인 목록을 두던 keyring 자리 (옮겨 오기용)
 CRED_SERVICE = "srtgo-bot-cred"
 STATE_FILE = "bot_state.json"
@@ -615,7 +626,7 @@ class StateStore:
 
     @staticmethod
     def _blank():
-        return {"version": 1, "users": {}, "prefs": {}, "watches": {}}
+        return {"version": 1, "users": {}, "prefs": {}, "watches": {}, "reminders": {}}
 
     def _load(self):
         blank = self._blank()
@@ -693,6 +704,18 @@ class StateStore:
         else:
             self.data["watches"].pop(str(chat_id), None)
         self.save()
+
+    # 예약대기 챙기기 -----------------------------------------------------
+    def put_reminders(self, chat_id, reminders):
+        if reminders:
+            self.data["reminders"][str(chat_id)] = [m.to_dict() for m in reminders]
+        else:
+            self.data["reminders"].pop(str(chat_id), None)
+        self.save()
+
+    def reminders_of(self, chat_id):
+        raw = self.data["reminders"].get(str(chat_id))
+        return raw if isinstance(raw, list) else []
 
 
 def migrate_users(store):
@@ -910,6 +933,119 @@ class Watch:
         return text
 
 
+class Reminder:
+    """예약대기 챙기기 한 건.
+
+    코레일 공식 '예약대기'는 매진 열차의 취소 좌석을 신청 순서대로 배정해 준다.
+    봇은 그 기한만 챙긴다 — 신청 마감(출발 2일 전), 배정 후 결제 마감(배정 당일 18시),
+    취소표가 도는 구간. 코레일에 요청을 한 번도 보내지 않는다.
+    """
+
+    FIELDS = (
+        "id", "dep", "arr", "date", "train_no", "dep_time", "pax",
+        "state", "applied_at", "assigned_date", "pay_deadline", "sent", "memo",
+    )
+    STATES = ("등록", "신청함", "배정됨", "결제함", "놓침", "종료")
+    # 챙기기가 끝난 건: 목록에서 세지 않는다. 결제함은 출발일 아침 한 번만 더 알린다.
+    DONE = ("결제함", "놓침", "종료")
+    # 아무것도 알리지 않는 건.
+    SILENT = ("놓침", "종료")
+
+    def __init__(self, **kw):
+        self.id = kw.get("id") or secrets.token_hex(3)
+        self.dep = str(kw["dep"])
+        self.arr = str(kw["arr"])
+        self.date = str(kw["date"])
+        self.train_no = str(kw.get("train_no") or "")
+        self.dep_time = str(kw.get("dep_time") or "")
+        self.pax = str(kw.get("pax") or "")
+        self.state = kw.get("state") or "등록"
+        self.applied_at = kw.get("applied_at")
+        self.assigned_date = str(kw.get("assigned_date") or "")
+        self.pay_deadline = str(kw.get("pay_deadline") or PAY_DEADLINE_DEFAULT)
+        self.sent = [str(k) for k in (kw.get("sent") or [])]
+        self.memo = str(kw.get("memo") or "")
+
+    def to_dict(self):
+        return {f: getattr(self, f) for f in self.FIELDS}
+
+    @classmethod
+    def from_dict(cls, data):
+        try:
+            if not isinstance(data, dict):
+                raise ValueError("객체가 아님")
+            for field in ("dep", "arr"):
+                if not isinstance(data.get(field), str) or not data[field].strip():
+                    raise ValueError(field)
+            date = str(data.get("date") or "")
+            if len(date) != 8 or not date.isdigit():
+                raise ValueError("date")
+            datetime.strptime(date, "%Y%m%d")
+            state = data.get("state") or "등록"
+            if state not in cls.STATES:
+                raise ValueError("state")
+            pay = str(data.get("pay_deadline") or PAY_DEADLINE_DEFAULT)
+            if len(pay) != 4 or not pay.isdigit() or int(pay[:2]) > 23 or int(pay[2:]) > 59:
+                raise ValueError("pay_deadline")
+            assigned = str(data.get("assigned_date") or "")
+            if assigned and (len(assigned) != 8 or not assigned.isdigit()):
+                raise ValueError("assigned_date")
+            return cls(**{**data, "state": state, "pay_deadline": pay})
+        except (AttributeError, KeyError, TypeError, ValueError) as ex:
+            raise ValueError(f"저장된 예약대기 형식이 잘못됨 ({ex})") from ex
+
+    # 시각 ---------------------------------------------------------------
+    @staticmethod
+    def at(ymd, time_="0000"):
+        return datetime.strptime(f"{ymd}{time_:0>4}", "%Y%m%d%H%M")
+
+    def departs(self):
+        """출발 시각. 열차 시각을 안 넣었으면 그날 끝으로 본다."""
+        return self.at(self.date, self.dep_time or "2359")
+
+    def apply_due(self):
+        """예약대기 신청 마감 (출발 2일 전의 끝)."""
+        return self.at(self.date) - timedelta(days=APPLY_DEADLINE_DAYS) + timedelta(
+            hours=23, minutes=59
+        )
+
+    def pay_due(self):
+        """배정분 결제 마감. 배정일을 넣지 않았으면 None."""
+        if not self.assigned_date:
+            return None
+        return self.at(self.assigned_date, self.pay_deadline)
+
+    # 표시 ---------------------------------------------------------------
+    def train_label(self):
+        if self.train_no and self.dep_time:
+            return f"{self.train_no} {hhmm(self.dep_time)}"
+        return self.train_no or (hhmm(self.dep_time) if self.dep_time else "열차 미정")
+
+    def headline(self):
+        line = f"{fmt_date(self.date)} {self.dep}→{self.arr} {self.train_label()}"
+        return f"{line} ({self.pax})" if self.pax else line
+
+    def state_line(self, now=None):
+        now = now or kst_now()
+        if self.state == "등록":
+            if now > self.apply_due():
+                return "등록 · 신청 마감 지남"
+            return f"등록 · {fmt_date(self.apply_due().strftime('%Y%m%d'))} 신청 마감"
+        if self.state == "신청함":
+            return "신청함 · 배정 기다리는 중"
+        if self.state == "배정됨":
+            due = self.pay_due()
+            if due is None:
+                return "배정됨 · 결제 기한 미정"
+            if due.date() == now.date():
+                return f"배정됨 · 오늘 {hhmm(self.pay_deadline)}까지 결제"
+            return f"배정됨 · {fmt_date(self.assigned_date)} {hhmm(self.pay_deadline)}까지 결제"
+        return self.state
+
+    def summary(self, now=None):
+        return f"{self.headline()}\n  {self.state_line(now)}"
+
+
 class UserContext:
     """사용자 한 명의 상태. 예매 중인 조건(draft)과 돌고 있는 대기(watches)는 완전히
     따로 둔다. 같은 객체를 나눠 쓰면 예매내역 한 번 보는 것만으로도 돌던 대기가
@@ -922,12 +1058,27 @@ class UserContext:
         self.draft = Draft()
         self.watches = {}  # id -> Watch (시작한 순서)
         self.tasks = {}  # id -> asyncio.Task
+        self.reminders = {}  # id -> Reminder (예약대기 챙기기)
+        self.rm_draft = None  # 만들고 있는 예약대기 건
+        self._load_reminders()
         # 입력을 기다리는 중: ("link", rail, "id"|"pw", 받은 id) / ("station", rail)
         self.awaiting = None
         self.rv_rail = None
         self.rv_items = []
         self.rails = {}  # 대화용 로그인 세션 (대기용과 따로)
         self.lock = asyncio.Lock()
+
+    def _load_reminders(self):
+        for raw in self.store.reminders_of(self.chat_id):
+            try:
+                m = Reminder.from_dict(raw)
+            except ValueError as ex:
+                log.warning("저장된 예약대기를 읽지 못해 버립니다: %s", ex)
+                continue
+            self.reminders[m.id] = m
+
+    def save_reminders(self):
+        self.store.put_reminders(self.chat_id, list(self.reminders.values()))
 
     @property
     def prefs(self):
@@ -1219,6 +1370,10 @@ class Bot(OpsMixin):
             await self._on_station_text(u, waiting[1], text)
         elif waiting and waiting[0] == "appver" and u.is_owner:
             await self._on_appver_text(u, text)
+        elif waiting and waiting[0] == "rmtrain":
+            await self._on_rm_text(u, text)
+        elif waiting and waiting[0] == "rmpay":
+            await self._on_rmpay_text(u, waiting[1], text)
         else:
             await self.show_home(Reply(self, u), note="버튼으로 조작해 주세요. 👇")
 
@@ -1282,8 +1437,10 @@ class Bot(OpsMixin):
     # --- 메인 화면 ------------------------------------------------------
     def home_markup(self, u):
         n = len(u.watches)
+        waiting = sum(1 for m in u.reminders.values() if m.state not in Reminder.DONE)
         rows = [
-            [("🚅 열차 예매 (KTX·SRT)", f"book:{BOOKING_RAIL}")],
+            [(f"예약대기 챙기기{f' ({waiting})' if waiting else ''}", "rm")],
+            [("🚅 열차 예매 (KTX·SRT) — 코레일이 막아 둠", f"book:{BOOKING_RAIL}")],
             [("🎫 예매내역", f"rv:{BOOKING_RAIL}"), (f"📋 대기 상황{f' ({n})' if n else ''}", "status")],
             [("⏹ 대기 중지", "stop"), ("⚙️ 설정", "set")],
             [("❓ 도움말", "help")],
@@ -1298,8 +1455,12 @@ class Bot(OpsMixin):
         u = r.u
         lines = [note, ""] if note else []
         lines.append("🚅 srtgo 예매 봇 (KTX·SRT 통합)")
+        waiting = [m for m in u.reminders.values() if m.state not in Reminder.DONE]
         if u.watches:
             lines.append(f"👀 대기 {len(u.watches)}건이 돌고 있습니다.")
+        elif waiting:
+            lines.append(f"예약대기 {len(waiting)}건을 챙기고 있습니다.")
+            lines.append("무엇을 할까요?")
         else:
             lines.append("무엇을 할까요?")
         await r.show("\n".join(lines), self.home_markup(u))
@@ -1314,6 +1475,10 @@ class Bot(OpsMixin):
         text = "\n".join(
             [
                 "❓ srtgo 봇 사용법",
+                "",
+                "예약대기 챙기기: 코레일 공식 예약대기의 기한을 대신 챙깁니다.",
+                "  열차를 등록해 두면 신청 마감(출발 2일 전)과 배정 후 결제 기한(배정 당일 18시)을 알려 드립니다.",
+                "  신청·결제는 코레일+ 앱에서 직접 하세요. 봇은 코레일에 접속하지 않습니다.",
                 "",
                 "🚅 예매: 열차 예매 → 출발역·도착역 → 날짜 → 시각 → 인원 → 감시할 열차 → 좌석 → 대기 시작",
                 "  KTX와 옛 SRT(수서·동탄·평택지제) 열차 모두 코레일 계정 하나로 예매합니다.",
@@ -1742,7 +1907,12 @@ class Bot(OpsMixin):
             }
             if counts and sum(counts.values()) <= MAX_PASSENGERS:
                 d.counts = counts
-        await self.show_stations(r, "dep")
+        await self.show_stations(
+            r,
+            "dep",
+            note="코레일이 자동 예매 프로그램의 접속을 막아 둔 상태입니다. "
+            "조회부터 안 될 수 있습니다. 매진 열차는 '예약대기 챙기기'를 쓰세요.",
+        )
 
     async def show_stations(self, r, kind, show_all=False, note=None):
         u, d = r.u, r.u.draft
@@ -2540,6 +2710,351 @@ class Bot(OpsMixin):
         log.info("%s: 예매 성공 %s — %s", u.chat_id, w.id, describe(reservation))
         await self._send_important(u.chat_id, "\n".join(lines), buttons)
 
+    # --- 예약대기 챙기기 --------------------------------------------------
+    async def btn_rm(self, r, arg):
+        await self.show_reminders(r)
+
+    def reminder_days(self):
+        """등록할 수 있는 출발 날짜. 예매 가능 범위와 같게 둔다."""
+        return self.booking_days(BOOKING_RAIL)[1:]
+
+    async def show_reminders(self, r, note=None):
+        u = r.u
+        now = kst_now()
+        items = self.sorted_reminders(u)
+        lines = [note, ""] if note else []
+        lines.append("예약대기 챙기기")
+        if items:
+            lines.append("")
+            for i, m in enumerate(items, 1):
+                lines.append(f"{i}. {m.summary(now)}")
+        else:
+            lines += [
+                "",
+                "코레일 공식 예약대기는 매진 열차의 취소 좌석을 신청 순서대로 배정해 줍니다.",
+                "여기에 열차를 등록해 두면 신청 마감과 배정 결제 기한을 제때 알려 드립니다.",
+                "표를 놓치는 건 대부분 배정 당일 결제 기한을 지나쳐서입니다.",
+            ]
+        rows = []
+        if len(items) < MAX_REMINDERS_PER_USER:
+            rows.append([("새로 추가", "rmnew")])
+        rows += chunk(
+            [(f"{i}. {m.dep}→{m.arr}", f"rmopen:{m.id}") for i, m in enumerate(items, 1)], 2
+        )
+        rows.append([HOME])
+        await r.show("\n".join(lines), kb(rows))
+
+    @staticmethod
+    def sorted_reminders(u):
+        return sorted(u.reminders.values(), key=lambda m: (m.date, m.dep_time, m.id))
+
+    async def btn_rmnew(self, r, arg):
+        u = r.u
+        if len(u.reminders) >= MAX_REMINDERS_PER_USER:
+            return await self.show_reminders(
+                r, note=f"한 번에 {MAX_REMINDERS_PER_USER}건까지만 챙길 수 있습니다."
+            )
+        u.rm_draft = {}
+        await self.show_rm_dates(r)
+
+    async def show_rm_dates(self, r):
+        buttons = [(fmt_date(day), f"rmdate:{day}") for day in self.reminder_days()]
+        rows = chunk(buttons, 4) + [[("예약대기 목록", "rm"), HOME]]
+        await r.show("예약대기를 걸 열차의 출발 날짜를 고르세요.", kb(rows))
+
+    async def btn_rmdate(self, r, day):
+        if day not in self.reminder_days():
+            return await self.show_rm_dates(r)
+        r.u.rm_draft = {"date": day}
+        await self.show_rm_stations(r, "dep")
+
+    async def show_rm_stations(self, r, kind, show_all=False):
+        u = r.u
+        d = u.rm_draft or {}
+        if not d.get("date") or (kind == "arr" and not d.get("dep")):
+            return await self.show_reminders(r, note="처음부터 다시 골라 주세요.")
+        favs = u.stations(BOOKING_RAIL)
+        names = all_stations(BOOKING_RAIL, extra=favs) if show_all else favs
+        if kind == "arr":
+            names = [n for n in names if n != d["dep"]]
+        head = f"{fmt_date(d['date'])}"
+        if kind == "arr":
+            head += f" {d['dep']}→"
+        rows = chunk([(n, f"rm{kind}:{n}") for n in names], 3)
+        if not show_all:
+            rows.append([("전체 역 보기", f"rmall:{kind}")])
+        rows.append([("예약대기 목록", "rm"), HOME])
+        question = "출발역을 고르세요." if kind == "dep" else "도착역을 고르세요."
+        await r.show(f"{head}\n\n{question}", kb(rows))
+
+    async def btn_rmall(self, r, kind):
+        if kind not in ("dep", "arr"):
+            return await self.show_reminders(r)
+        await self.show_rm_stations(r, kind, show_all=True)
+
+    async def btn_rmdep(self, r, name):
+        u = r.u
+        if not (u.rm_draft or {}).get("date") or not valid_station(BOOKING_RAIL, name):
+            return await self.show_reminders(r, note="처음부터 다시 골라 주세요.")
+        u.rm_draft["dep"] = name
+        await self.show_rm_stations(r, "arr")
+
+    async def btn_rmarr(self, r, name):
+        u = r.u
+        d = u.rm_draft or {}
+        if not (d.get("date") and d.get("dep")) or not valid_station(BOOKING_RAIL, name):
+            return await self.show_reminders(r, note="처음부터 다시 골라 주세요.")
+        if name == d["dep"]:
+            return await self.show_rm_stations(r, "arr")
+        d["arr"] = name
+        u.awaiting = ("rmtrain",)
+        await r.show(
+            f"{fmt_date(d['date'])} {d['dep']}→{d['arr']}\n\n"
+            "열차번호와 출발시각을 한 줄로 보내 주세요. 예: 101 0900\n"
+            "인원 같은 메모를 뒤에 붙여도 됩니다. 예: 101 0900 어른 2\n"
+            "모르면 건너뛰어도 됩니다.",
+            kb([[("건너뛰기", "rmskip")], [("예약대기 목록", "rm"), HOME]]),
+        )
+
+    @staticmethod
+    def parse_train_text(text):
+        """'101 0900 어른 2' → ('101', '0900', '어른 2')."""
+        train_no = dep_time = ""
+        rest = []
+        for token in (text or "").split():
+            plain = token.replace(":", "")
+            if not dep_time and len(plain) == 4 and plain.isdigit() and int(plain[:2]) <= 23 and int(plain[2:]) <= 59:
+                dep_time = plain
+            elif not train_no and token.isdigit() and len(token) <= 5:
+                train_no = token
+            else:
+                rest.append(token)
+        return train_no, dep_time, " ".join(rest)[:40]
+
+    async def _on_rm_text(self, u, text):
+        train_no, dep_time, pax = self.parse_train_text(text)
+        await self._save_reminder(Reply(self, u), train_no=train_no, dep_time=dep_time, pax=pax)
+
+    async def btn_rmskip(self, r, arg):
+        await self._save_reminder(r)
+
+    async def _save_reminder(self, r, train_no="", dep_time="", pax=""):
+        u = r.u
+        d = u.rm_draft or {}
+        if not (d.get("date") and d.get("dep") and d.get("arr")):
+            return await self.show_reminders(r, note="처음부터 다시 골라 주세요.")
+        u.awaiting = None
+        u.rm_draft = None
+        m = Reminder(
+            dep=d["dep"], arr=d["arr"], date=d["date"],
+            train_no=train_no, dep_time=dep_time, pax=pax,
+        )
+        u.reminders[m.id] = m
+        u.save_reminders()
+        log.info("%s: 예약대기 등록 %s — %s", u.chat_id, m.id, m.headline())
+        await self.show_reminders(
+            r,
+            note=f"등록했습니다. {fmt_date(m.apply_due().strftime('%Y%m%d'))}까지 "
+            "코레일+ 앱이나 홈페이지에서 예약대기를 신청하세요.",
+        )
+
+    async def btn_rmopen(self, r, rid):
+        u = r.u
+        m = u.reminders.get(rid)
+        if m is None:
+            return await self.show_reminders(r, note="없는 건입니다.")
+        now = kst_now()
+        lines = [m.headline(), "", m.state_line(now)]
+        if m.memo:
+            lines.append(m.memo)
+        rows = []
+        if m.state == "등록":
+            rows.append([("신청했음", f"rmstate:{rid}:applied")])
+        if m.state in ("등록", "신청함"):
+            rows.append([("배정됨", f"rmstate:{rid}:assigned")])
+        if m.state == "배정됨":
+            rows.append([("결제했음", f"rmstate:{rid}:paid")])
+            rows.append([("결제 기한 바꾸기", f"rmpay:{rid}")])
+        if m.state in Reminder.DONE:
+            lines.append("")
+            lines.append("끝난 건입니다. 더 알리지 않습니다.")
+        rows.append([("삭제", f"rmdel:{rid}")])
+        rows.append([("예약대기 목록", "rm"), HOME])
+        await r.show("\n".join(lines), kb(rows))
+
+    async def btn_rmstate(self, r, arg):
+        rid, _, key = arg.partition(":")
+        u = r.u
+        m = u.reminders.get(rid)
+        if m is None:
+            return await self.show_reminders(r, note="없는 건입니다.")
+        now = kst_now()
+        if key == "applied":
+            m.state = "신청함"
+            m.applied_at = int(time.time())
+            note = "신청함으로 바꿨습니다. 배정되면 코레일이 문자로 알려 줍니다."
+        elif key == "assigned":
+            m.state = "배정됨"
+            m.assigned_date = now.strftime("%Y%m%d")
+            m.pay_deadline = PAY_DEADLINE_DEFAULT
+            m.sent = [k for k in m.sent if not k.startswith("pay")]
+            note = (
+                f"배정됨으로 바꿨습니다. 오늘 {hhmm(m.pay_deadline)}까지 결제해야 합니다.\n"
+                "문자에 다른 시각이 적혀 있으면 '결제 기한 바꾸기'로 고쳐 주세요."
+            )
+        elif key == "paid":
+            m.state = "결제함"
+            note = "결제함으로 바꿨습니다. 출발일 아침에 한 번만 더 알려 드립니다."
+        else:
+            return await self.btn_rmopen(r, rid)
+        u.save_reminders()
+        await self.show_reminders(r, note=note)
+
+    async def btn_rmpay(self, r, rid):
+        u = r.u
+        if rid not in u.reminders:
+            return await self.show_reminders(r, note="없는 건입니다.")
+        u.awaiting = ("rmpay", rid)
+        await r.show(
+            "결제 기한을 네 자리로 보내 주세요. 예: 1800\n"
+            "코레일 배정 문자에 적힌 시각을 그대로 넣으면 됩니다.",
+            kb([[("예약대기 목록", "rm"), HOME]]),
+        )
+
+    async def _on_rmpay_text(self, u, rid, text):
+        m = u.reminders.get(rid)
+        r = Reply(self, u)
+        if m is None:
+            u.awaiting = None
+            return await self.show_reminders(r, note="없는 건입니다.")
+        value = (text or "").replace(":", "").strip()
+        if len(value) != 4 or not value.isdigit() or int(value[:2]) > 23 or int(value[2:]) > 59:
+            return await r.show(
+                "네 자리 시각으로 보내 주세요. 예: 1800",
+                kb([[("예약대기 목록", "rm"), HOME]]),
+            )
+        u.awaiting = None
+        m.pay_deadline = value
+        m.sent = [k for k in m.sent if not k.startswith("pay")]
+        u.save_reminders()
+        await self.show_reminders(r, note=f"결제 기한을 {hhmm(value)}로 바꿨습니다.")
+
+    async def btn_rmdel(self, r, rid):
+        m = r.u.reminders.get(rid)
+        if m is None:
+            return await self.show_reminders(r, note="없는 건입니다.")
+        await r.show(
+            f"{m.headline()}\n\n이 건을 지울까요?",
+            kb([[("지우기", f"rmdelok:{rid}"), ("그대로 두기", f"rmopen:{rid}")]]),
+        )
+
+    async def btn_rmdelok(self, r, rid):
+        u = r.u
+        if u.reminders.pop(rid, None) is None:
+            return await self.show_reminders(r, note="없는 건입니다.")
+        u.save_reminders()
+        await self.show_reminders(r, note="지웠습니다.")
+
+    # --- 예약대기 알림 ----------------------------------------------------
+    @staticmethod
+    def reminder_notices(m, now):
+        """지금 보낼 알림들. (키, 문구, 중요) 목록."""
+        out = []
+        if m.state in Reminder.SILENT:
+            return out
+        apply_due = m.apply_due()
+        depart = m.departs()
+        head = m.headline()
+        if m.state == "등록" and now <= apply_due:
+            if now >= apply_due - timedelta(days=1, hours=14, minutes=59):  # 출발 3일 전 09:00
+                out.append((
+                    "apply3",
+                    f"예약대기 신청 마감이 모레입니다.\n{head}\n"
+                    f"{fmt_date(apply_due.strftime('%Y%m%d'))}까지 코레일+ 앱이나 홈페이지에서 신청하세요.",
+                    False,
+                ))
+            if now >= apply_due - timedelta(hours=14, minutes=59):  # 출발 2일 전 09:00
+                out.append((
+                    "apply2",
+                    f"오늘이 예약대기 신청 마감입니다.\n{head}\n"
+                    "오늘 안에 신청하지 않으면 이 열차는 예약대기를 걸 수 없습니다.",
+                    False,
+                ))
+            if now >= apply_due - timedelta(hours=5, minutes=59):  # 출발 2일 전 18:00
+                out.append((
+                    "apply2e",
+                    f"예약대기 신청 마감이 오늘 자정입니다.\n{head}",
+                    False,
+                ))
+        day_before = Reminder.at(m.date, "0900") - timedelta(days=1)
+        if m.state in ("등록", "신청함") and day_before <= now < depart:
+            # 출발 전날 09:00부터. 취소가 몰리는 때라는 건 통설이지 코레일 공식 안내가 아니다.
+            out.append((
+                "cancelwin",
+                f"내일 출발입니다. 지금부터 취소표가 나올 수 있습니다.\n{head}\n"
+                "코레일+ 앱에서 직접 확인해 보세요. (취소가 몰리는 때라는 건 통설이고 공식 안내는 아닙니다)",
+                False,
+            ))
+        pay_due = m.pay_due()
+        if m.state == "배정됨" and pay_due is not None:
+            if now < pay_due:
+                if now >= Reminder.at(m.assigned_date, "0900"):
+                    out.append((
+                        "payam",
+                        f"오늘 {hhmm(m.pay_deadline)}까지 결제해야 합니다.\n{head}\n"
+                        "결제하지 않으면 배정된 좌석이 취소됩니다.",
+                        False,
+                    ))
+                if now >= pay_due - timedelta(hours=2):
+                    out.append((
+                        "pay2h",
+                        f"결제 기한까지 2시간 남았습니다.\n{head}\n{hhmm(m.pay_deadline)}까지입니다.",
+                        False,
+                    ))
+                if now >= pay_due - timedelta(minutes=30):
+                    out.append((
+                        "pay30m",
+                        f"결제 기한까지 30분 남았습니다.\n{head}\n"
+                        "지나면 좌석이 취소됩니다. 지금 코레일+ 앱에서 결제해 주세요.",
+                        True,
+                    ))
+            elif now < pay_due + MISS_NOTICE_WITHIN and now >= pay_due + timedelta(minutes=10):
+                out.append((
+                    "paymiss",
+                    f"결제 기한이 지났습니다.\n{head}\n"
+                    "배정된 좌석은 취소됐을 수 있습니다. 코레일+ 앱에서 확인해 주세요.",
+                    True,
+                ))
+        if m.state == "결제함" and Reminder.at(m.date, "0700") <= now < depart:
+            out.append(("depday", f"오늘 출발입니다.\n{head}", False))
+        return [n for n in out if n[0] not in m.sent]
+
+    async def _standby_tick(self, now=None):
+        """예약대기 기한 알림. 코레일에 접속하지 않는다."""
+        now = now or kst_now()
+        sent_any = False
+        for chat_id in list(self.store.data["reminders"]):
+            if not self.is_allowed(chat_id):
+                self.store.data["reminders"].pop(chat_id, None)
+                self.store.save()
+                continue
+            u = self.context_for(chat_id)
+            changed = False
+            for m in list(u.reminders.values()):
+                for key, text, important in self.reminder_notices(m, now):
+                    m.sent.append(key)
+                    changed = sent_any = True
+                    send = self._send_important if important else self._send
+                    await send(u.chat_id, text, kb([[("예약대기 챙기기", "rm")]]))
+                    if key == "paymiss":
+                        m.state = "놓침"
+                if m.state not in Reminder.SILENT and now >= m.departs():
+                    m.state = "종료"
+                    changed = True
+            if changed:
+                u.save_reminders()
+        return sent_any
+
     # --- 예매내역 --------------------------------------------------------
     async def btn_rv(self, r, rail_type):
         await self.load_reservations(r, rail_type)
@@ -2737,6 +3252,10 @@ class Bot(OpsMixin):
                 await self._ops_tick()
             except Exception as ex:  # 관리 알림이 실패해도 하트비트는 계속 쓴다
                 log.warning("관리 알림 처리 실패: %s", ex)
+            try:
+                await self._standby_tick()
+            except Exception as ex:  # 알림이 실패해도 봇은 계속 돈다
+                log.warning("예약대기 알림 처리 실패: %s", ex)
             updater = getattr(app, "updater", None)
             if updater is None or updater.running:
                 try:
