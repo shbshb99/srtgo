@@ -19,15 +19,12 @@ LOG = logging.getLogger("test-updater")
 
 
 def release(version, data=WHEEL, digest="good"):
-    asset = {
-        "name": f"srtgo-{version}-py3-none-any.whl",
-        "browser_download_url": f"https://example/{version}.whl",
-    }
+    m = {"version": version, "wheel": f"srtgo-{version}-py3-none-any.whl"}
     if digest == "good":
-        asset["digest"] = "sha256:" + hashlib.sha256(data).hexdigest()
+        m["sha256"] = hashlib.sha256(data).hexdigest()
     elif digest:
-        asset["digest"] = digest
-    return {"tag_name": f"v{version}", "assets": [asset]}
+        m["sha256"] = digest
+    return m
 
 
 class Env:
@@ -47,9 +44,12 @@ class Env:
         )
         self.u.next_check = 0
 
-    def get(self, url, accept=None):
-        if url == up.LATEST_URL:
+    def get(self, url):
+        if url.endswith(up.MANIFEST):
+            if url.startswith(up.UPDATE_BASES[0]):
+                raise OSError("404")  # main 에는 아직 없다 -> 다음 주소로
             return json.dumps(self.release).encode()
+        assert url.startswith(up.UPDATE_BASES[1])
         self.downloads.append(url)
         return WHEEL
 
@@ -78,11 +78,18 @@ def test_new_release_is_verified_installed_and_confirmed(tmp_path):
     assert (e.pkg / "bot.py").read_text() == "NEW"
 
 
-@pytest.mark.parametrize("digest", ["sha256:" + "0" * 64, None])
+@pytest.mark.parametrize("digest", ["0" * 64, None])
 def test_unverifiable_download_is_not_installed(tmp_path, digest):
     e = Env(tmp_path, rel=release("2.2.2+ktx.11", digest=digest))
     assert e.u.find_update() is None
     assert e.installed == []
+
+
+def test_manifest_pointing_elsewhere_is_rejected(tmp_path):
+    rel = release("2.2.2+ktx.11")
+    rel["wheel"] = "../evil/srtgo-2.2.2+ktx.11-py3-none-any.whl"
+    e = Env(tmp_path, rel=rel)
+    assert e.u.find_update() is None and e.downloads == []
 
 
 def test_same_or_older_release_is_ignored_without_downloading(tmp_path):

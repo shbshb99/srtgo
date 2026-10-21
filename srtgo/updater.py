@@ -1,7 +1,7 @@
-"""워치독이 쓰는 자동 업데이트: GitHub 릴리스에 새 버전이 올라오면 받아서 설치한다.
+"""워치독이 쓰는 자동 업데이트: 저장소에 새 버전이 올라오면 받아서 설치한다.
 
-- 확인: 6시간마다 https://api.github.com/repos/<REPO>/releases/latest 를 본다.
-- 받기: 릴리스에 붙은 .whl 을 받아 GitHub 가 알려 준 SHA256 과 맞는지 확인한다.
+- 확인: 6시간마다 저장소의 updates/latest.json ({"version", "wheel", "sha256"}) 을 본다.
+- 받기: 같은 폴더의 .whl 을 받아 latest.json 의 SHA256 과 맞는지 확인한다.
   해시가 없거나 다르면 설치하지 않는다.
 - 설치: 봇을 깔끔하게 끄게 한 뒤(restart.request) pip 로 설치한다. 설치 전에
   지금 코드를 통째로 복사해 둔다.
@@ -24,7 +24,12 @@ from importlib import metadata
 from pathlib import Path
 
 REPO = "shbshb99/srtgo"
-LATEST_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
+# 앞에서부터 차례로 본다 (기본 브랜치에 합쳐지면 main 이, 그 전에는 작업 브랜치가 쓰인다).
+UPDATE_BASES = [
+    f"https://raw.githubusercontent.com/{REPO}/main/updates/",
+    f"https://raw.githubusercontent.com/{REPO}/claude/srtgo-ktx-compatibility-7gczbc/updates/",
+]
+MANIFEST = "latest.json"
 CHECK_EVERY_SECONDS = 6 * 3600
 FIRST_CHECK_AFTER_SECONDS = 10 * 60
 HTTP_TIMEOUT = 30
@@ -50,8 +55,8 @@ def package_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def http_get(url: str, accept: str = "application/vnd.github+json") -> bytes:
-    req = urllib.request.Request(url, headers={"Accept": accept, "User-Agent": "srtgo-updater"})
+def http_get(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "srtgo-updater", "Cache-Control": "no-cache"})
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
         return r.read()
 
@@ -96,41 +101,52 @@ class Updater:
         return self.enabled() and time.time() >= self.next_check
 
     # --- 확인·받기 --------------------------------------------------------
+    def _manifest(self):
+        """읽을 수 있는 첫 latest.json 과 그 폴더 주소. 하나도 못 읽으면 (None, None)."""
+        errors = []
+        for base in UPDATE_BASES:
+            try:
+                m = json.loads(self.get(base + MANIFEST))
+            except Exception as ex:
+                errors.append(f"{base}: {ex}")
+                continue
+            if isinstance(m, dict):
+                return m, base
+        self.log.info("업데이트 확인 실패 (다음에 다시): %s", "; ".join(errors))
+        return None, None
+
     def find_update(self):
         """설치할 새 버전이 있으면 (버전, 받은 .whl 경로). 없으면 None."""
         self.next_check = time.time() + CHECK_EVERY_SECONDS
-        try:
-            release = json.loads(self.get(LATEST_URL))
-        except Exception as ex:
-            self.log.info("업데이트 확인 실패 (다음에 다시): %s", ex)
+        manifest, base = self._manifest()
+        if not manifest:
             return None
         current = self.current()
-        skip = set(self.state().get("skip", []))
-        for asset in release.get("assets", []) or []:
-            m = WHEEL_RE.match(asset.get("name") or "")
-            if not m:
-                continue
-            version = m.group(1)
-            if version in skip or version_key(version) <= version_key(current):
-                return None
-            digest = asset.get("digest") or ""
-            if not digest.startswith("sha256:"):
-                self.log.warning("업데이트 %s 에 SHA256 정보가 없어 설치하지 않습니다.", version)
-                return None
-            try:
-                data = self.get(asset["browser_download_url"], accept="application/octet-stream")
-            except Exception as ex:
-                self.log.info("업데이트 %s 받기 실패 (다음에 다시): %s", version, ex)
-                return None
-            if hashlib.sha256(data).hexdigest() != digest.split(":", 1)[1].lower():
-                self.log.error("업데이트 %s 의 SHA256 이 맞지 않아 설치하지 않습니다.", version)
-                return None
-            self.dir.mkdir(parents=True, exist_ok=True)
-            wheel = self.dir / asset["name"]
-            wheel.write_bytes(data)
-            self.log.info("새 버전 %s 을 받았습니다 (지금 %s).", version, current)
-            return version, wheel
-        return None
+        version = str(manifest.get("version") or "")
+        name = str(manifest.get("wheel") or "")
+        sha = str(manifest.get("sha256") or "").lower()
+        m = WHEEL_RE.match(name)
+        if not m or m.group(1) != version or "/" in name or "\\" in name:
+            self.log.warning("latest.json 형식이 이상해 업데이트하지 않습니다: %s", manifest)
+            return None
+        if version in set(self.state().get("skip", [])) or version_key(version) <= version_key(current):
+            return None
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            self.log.warning("업데이트 %s 에 SHA256 정보가 없어 설치하지 않습니다.", version)
+            return None
+        try:
+            data = self.get(base + name)
+        except Exception as ex:
+            self.log.info("업데이트 %s 받기 실패 (다음에 다시): %s", version, ex)
+            return None
+        if hashlib.sha256(data).hexdigest() != sha:
+            self.log.error("업데이트 %s 의 SHA256 이 맞지 않아 설치하지 않습니다.", version)
+            return None
+        self.dir.mkdir(parents=True, exist_ok=True)
+        wheel = self.dir / name
+        wheel.write_bytes(data)
+        self.log.info("새 버전 %s 을 받았습니다 (지금 %s).", version, current)
+        return version, wheel
 
     # --- 설치·되돌리기 ----------------------------------------------------
     def install(self, version: str, wheel: Path) -> bool:
