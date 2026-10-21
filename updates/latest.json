@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2+ktx.17",
-  "wheel": "srtgo-2.2.2+ktx.17-py3-none-any.whl",
-  "sha256": "cdf0bd5f92ee7b1a7bdc0ad48cb8c3dce2b86eedbe9df7051d1a19d8dff6f9a2",
-  "notes": "업데이트할 때 봇이 바로 꺼졌다 켜지게 고쳤습니다 (전엔 몇 분 걸릴 수 있었음). 새 버전 확인도 바로 보이게 했습니다."
+  "version": "2.2.2+ktx.18",
+  "wheel": "srtgo-2.2.2+ktx.18-py3-none-any.whl",
+  "sha256": "0f0732634fe5dc7ca17dd6912c7f8a2b0bdc030c18ace224cca18b14c46ab199",
+  "notes": "예약대기 챙기기를 넣었습니다. 매진 열차를 등록해 두면 신청 마감(출발 2일 전)과 배정 후 결제 기한(배정 당일 18시)을 때맞춰 알려 드립니다. 코레일에 접속하지 않는 기능입니다."
 }
