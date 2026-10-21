@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2+ktx.12",
-  "wheel": "srtgo-2.2.2+ktx.12-py3-none-any.whl",
-  "sha256": "0a2df80bd639c5191df598c65cba945081717fdd4601860226debe9c1ca3646a",
-  "notes": "폰으로 관리: /admin(🛠 관리)에서 업데이트 승인·재시작·기록 보기·코레일 버전 점검. 앞으로 새 버전은 [설치]를 눌러야 설치됩니다."
+  "version": "2.2.2+ktx.13",
+  "wheel": "srtgo-2.2.2+ktx.13-py3-none-any.whl",
+  "sha256": "a27baa071a53d73583b23a7e71410e14787fa0249897e588f1a9de7dac9b0bb2",
+  "notes": "코레일이 막으면(-8204) 대기를 멈추고, 자동 재시도도 하루 쉽니다 (집 IP 차단 방지). 폰으로 관리(/admin) 포함."
 }
