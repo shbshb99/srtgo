@@ -1,5 +1,6 @@
 {
-  "version": "2.2.2+ktx.11",
-  "wheel": "srtgo-2.2.2+ktx.11-py3-none-any.whl",
-  "sha256": "7cd2f9c6d28dca61d01c0bf2f690cd3b6b278a31d56f70f259d1e2a7250726e4"
+  "version": "2.2.2+ktx.12",
+  "wheel": "srtgo-2.2.2+ktx.12-py3-none-any.whl",
+  "sha256": "0a2df80bd639c5191df598c65cba945081717fdd4601860226debe9c1ca3646a",
+  "notes": "폰으로 관리: /admin(🛠 관리)에서 업데이트 승인·재시작·기록 보기·코레일 버전 점검. 앞으로 새 버전은 [설치]를 눌러야 설치됩니다."
 }
