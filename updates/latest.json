@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2+ktx.15",
-  "wheel": "srtgo-2.2.2+ktx.15-py3-none-any.whl",
-  "sha256": "cc8af8c8eac9e21d5f4cf82bebb8bd0acd40b439fe249f5dbbcf4aba2ee7a86d",
-  "notes": "코레일에 막혔을 때 버전을 자동으로 찾으며 수백 번 조회하던 것을 껐습니다 (집 IP 차단 방지). 코레일이 막으면 바로 알리고 멈춥니다."
+  "version": "2.2.2+ktx.16",
+  "wheel": "srtgo-2.2.2+ktx.16-py3-none-any.whl",
+  "sha256": "f7e15f3aba75d33b9099a7d770d18835d97b146f0dc05b3acb8c11d7382c3ad5",
+  "notes": "새 버전을 올리자마자 '지금 확인'에서 바로 보이게 했습니다. (ktx.15 내용 포함: 코레일에 막히면 수백 번 조회하지 않고 바로 멈춤)"
 }
