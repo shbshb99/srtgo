@@ -1,5 +1,6 @@
 """워치독, 앱 구성, 실행 코드, 코레일 라이브러리 수정분."""
 
+import pathlib
 import asyncio
 import json
 import logging
@@ -268,3 +269,28 @@ def test_korail_version_can_be_overridden_without_reinstall(tmp_path, monkeypatc
     assert (k._app_version, k._version) == ("7.1.0", "251001001")
     (tmp_path / "korail.json").write_text("{깨짐", encoding="utf-8")
     assert ktx.Korail("a", "b", auto_login=False)._app_version == ktx.KORAIL_APP_VERSION
+
+
+def test_bot_process_exits_even_if_a_worker_thread_is_still_busy(tmp_path):
+    """업데이트하려고 끌 때, 조회하던 스레드 때문에 프로세스가 몇 분씩 안 꺼지면 안 된다."""
+    import subprocess
+    import sys
+    import time
+
+    code = (
+        "import asyncio, time, srtgo.bot as b\n"
+        "def fake():\n"
+        "    # python-telegram-bot 의 run_polling 처럼: 루프를 닫되 작업 스레드는 기다리지 않는다\n"
+        "    loop = asyncio.new_event_loop()\n"
+        "    async def go():\n"
+        "        loop.run_in_executor(None, time.sleep, 60)\n"
+        "        await asyncio.sleep(0.1)\n"
+        "    loop.run_until_complete(go())\n"
+        "    loop.close()\n"
+        "    return 0\n"
+        "b.run_bot = fake\n"
+        "b.main()\n"
+    )
+    started = time.time()
+    proc = subprocess.run([sys.executable, "-c", code], timeout=30, cwd=str(pathlib.Path(__file__).parent.parent))
+    assert proc.returncode == 0 and time.time() - started < 15

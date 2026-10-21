@@ -2896,7 +2896,12 @@ def run_bot() -> int:
 
 
 def main():
-    sys.exit(run_bot())
+    code = run_bot()
+    # 조회 중이던 작업 스레드(asyncio.to_thread)가 남아 있으면 파이썬은 그게 끝날 때까지
+    # 프로세스를 닫지 않는다. 그동안 워치독은 봇이 안 꺼졌다고 보고 기다린다. 봇은 이미
+    # 대기를 저장하고 정리했으니, 남은 스레드는 기다리지 않고 바로 끝낸다.
+    logging.shutdown()
+    os._exit(code if isinstance(code, int) else 0)
 
 
 if __name__ == "__main__":
