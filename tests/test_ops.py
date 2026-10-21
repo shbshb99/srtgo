@@ -196,3 +196,34 @@ def test_watchdog_take_over_kills_old_and_waits_for_bot(tmp_path, monkeypatch):
     lock = wd.take_over(__import__("logging").getLogger("t"), tmp_path, 4242, 4343)
     assert lock is not None and killed == [4242]
     lock.close()
+
+
+def test_owner_types_app_version_from_phone(admin, monkeypatch):
+    from srtgo import korail_version as kv
+
+    monkeypatch.setenv("SRTGO_HOME", str(admin.home))
+    tried = []
+    monkeypatch.setattr(kv, "probe", lambda a, v: tried.append(a) or True)
+
+    async def go():
+        await admin.owner.command("admin")
+        await admin.owner.press("opsappver")
+        await admin.owner.say("7.0.10")
+
+    run(go())
+    assert tried == ["7.0.10"] and kv.load_config()["app_version"] == "7.0.10"
+    assert "조회가 됩니다" in admin.owner.screen.text
+
+
+def test_bad_app_version_text_is_rejected(admin, monkeypatch):
+    from srtgo import korail_version as kv
+
+    monkeypatch.setenv("SRTGO_HOME", str(admin.home))
+
+    async def go():
+        await admin.owner.command("admin")
+        await admin.owner.press("opsappver")
+        await admin.owner.say("최신")
+
+    run(go())
+    assert "버전 모양이 아닙니다" in admin.owner.screen.text and not kv.load_config()

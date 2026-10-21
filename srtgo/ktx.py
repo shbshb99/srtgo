@@ -50,7 +50,7 @@ DEFAULT_HEADERS = {
 
 # 코레일 앱 버전 기본값. ~/.srtgo/korail.json 의 {"app_version", "version"} 이 있으면 그걸 쓴다.
 # 서버가 옛 버전을 막으면(-8204) korail_version 이 맞는 값을 찾아 그 파일에 저장한다.
-KORAIL_APP_VERSION = "7.0.8"
+KORAIL_APP_VERSION = "7.0.10"  # 2026-10-21 코레일+ 앱 기준
 KORAIL_API_VERSION = "250601003"
 
 

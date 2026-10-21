@@ -1217,6 +1217,8 @@ class Bot(OpsMixin):
             await self._on_link_text(u, message, waiting, text)
         elif waiting and waiting[0] == "station":
             await self._on_station_text(u, waiting[1], text)
+        elif waiting and waiting[0] == "appver" and u.is_owner:
+            await self._on_appver_text(u, text)
         else:
             await self.show_home(Reply(self, u), note="버튼으로 조작해 주세요. 👇")
 

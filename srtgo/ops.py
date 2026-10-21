@@ -209,7 +209,8 @@ class OpsMixin:
         mode = updater.mode(home)
         nxt = {"approve": "auto", "auto": "off", "off": "approve"}[mode]
         rows.append([("🔄 지금 확인", "opscheck"), (f"업데이트: {MODE_NAME[mode]} → {MODE_NAME[nxt]}", "opsmode")])
-        rows.append([("🚅 코레일 버전 점검", "opskorail"), ("📜 기록 보기", "opslog")])
+        rows.append([("🚅 코레일 버전 점검", "opskorail"), ("✏️ 앱 버전 입력", "opsappver")])
+        rows.append([("📜 기록 보기", "opslog")])
         rows.append([("🔁 봇 재시작", "opsrestart"), HOME])
         return kb(rows)
 
@@ -326,6 +327,43 @@ class OpsMixin:
             await self.show_ops(r, note=f"🔧 {app}이(가) 막혀 있어 {found[0]}(으)로 바꿨습니다.")
         else:
             await self.show_ops(r, note="⚠️ 통과하는 코레일 앱 버전을 찾지 못했습니다. 프로그램 수정이 필요합니다.")
+
+    async def btn_opsappver(self, r, arg):
+        if not await self._owner_only(r):
+            return
+        from .bot import kb
+
+        r.u.awaiting = ("appver",)
+        app, api = korail_version_values()
+        await r.show(
+            f"✏️ 폰의 코레일+ 앱 버전을 보내 주세요 (예: 7.0.10).\n지금 쓰는 값: {app}\n"
+            "앱 설정(⚙️) 화면 아래쪽에서 볼 수 있습니다.",
+            kb([[("취소", "ops")]]),
+        )
+
+    async def _on_appver_text(self, u, text):
+        import re
+
+        u.awaiting = None
+        from .bot import Reply
+
+        r = Reply(self, u)
+        if not re.fullmatch(r"\d{1,2}\.\d{1,2}\.\d{1,3}", text.strip()):
+            await self.show_ops(r, note=f"'{text[:20]}'은(는) 버전 모양이 아닙니다 (예: 7.0.10).")
+            return
+        app = text.strip()
+        _, api = korail_version_values()
+        korail_version.save_config(app, api)
+        log.warning("오너가 코레일 앱 버전을 %s 로 입력했습니다.", app)
+        await r.show(f"🚅 {app}(으)로 저장했습니다. 코레일에 한 번 확인해 봅니다…")
+        ok = await asyncio.to_thread(korail_version.probe, app, api)
+        if ok:
+            await self.show_ops(r, note=f"✅ {app}(으)로 코레일 조회가 됩니다. 예매를 다시 해 보세요.")
+        else:
+            await self.show_ops(
+                r,
+                note=f"⛔ {app}(으)로도 코레일이 막습니다(-8204). 버전 문제가 아니라 접속 자체를 막은 것으로 보입니다.",
+            )
 
     async def btn_opsrestart(self, r, arg):
         if not await self._owner_only(r):
