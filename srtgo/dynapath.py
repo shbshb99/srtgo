@@ -312,12 +312,9 @@ def generate_dynapath_token(
         ("hk", str(settings.hooked).lower()),
         ("it", settings.app_start_ts),
         ("ts", str(ts)),
-        # The app sends `rt` as an array of inter-request delays and omits
-        # the field entirely when none have accumulated yet
-        # (B/C1229b.java:118-127). A fresh client always takes that path, so
-        # a fixed "0" matches what the server actually accepts here; `rt` is
-        # not used in key derivation (dyn_key is sv+rand+ts).
-        ("rt", "0"),
+        # `rt` (inter-request delays) is omitted: the 7.0.8 app leaves it out
+        # of a freshly started client's token, and it is not used in key
+        # derivation (dyn_key is sv+rand+ts).
         ("os", settings.os_version),
         ("dm", settings.device_model),
         ("st", settings.os_type),

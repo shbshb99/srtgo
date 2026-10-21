@@ -147,14 +147,21 @@ class FakeResponse:
 
 
 class FakeSession:
+    """응답을 순서대로 돌려주고, 보낸 요청을 기록한다. 로그인 전 서비스 확인은 응답을 소비하지 않는다."""
+
     def __init__(self, responses):
         self.responses = list(responses)
         self.headers = {}
+        self.sent = []
 
     def post(self, url, data=None, headers=None):
+        self.sent.append(("POST", url, dict(data or {}), headers or {}))
+        if "MobileService.cache" in url:
+            return FakeResponse({})
         return self.responses.pop(0)
 
     def get(self, url, params=None, headers=None):
+        self.sent.append(("GET", url, dict(params or {}), headers or {}))
         return self.responses.pop(0)
 
 
@@ -199,3 +206,55 @@ def test_waiting_list_reservation_does_not_crash_listing():
     )
     (r,) = k.reservations()
     assert r.is_waiting and r.tickets == []
+
+
+# 2026-10: 앱 버전(AppVersion)이 없으면 서버가 "최신 버전으로 업데이트해 주세요"(-8204)로 막는다.
+def korail_requests(responses):
+    k = ktx.Korail("010-1234-5678", "pw", auto_login=False)
+    k._session = FakeSession(responses)
+    return k, k._session.sent
+
+
+def test_korail_login_sends_current_app_version():
+    k, sent = korail_requests(
+        [
+            FakeResponse({"strResult": "SUCC", "app.login.cphd": {"idx": "7", "key": "k" * 32}}),
+            FakeResponse({"strResult": "SUCC", "strMbCrdNo": "1234567890"}),
+        ]
+    )
+    assert k.login() is True and k.name == ""
+    cphd, login = [r for r in sent if "MobileService" not in r[1]]
+    for method, _, data, _ in (cphd, login):
+        assert method == "POST" and data["AppVersion"] == k._app_version
+    assert login[2]["idx"] == "7" and login[2]["checkValidPw"] == "Y"
+    assert login[2]["txtPwd"].endswith("\n")
+    assert "x-dynapath-m-token" in login[3]
+
+
+def test_korail_search_and_reserve_send_app_version_and_station_order():
+    raw = {
+        "h_trn_clsf_cd": "100", "h_trn_clsf_nm": "KTX", "h_trn_gp_cd": "100",
+        "h_trn_no": "00101", "h_dpt_rs_stn_nm": "동탄", "h_dpt_rs_stn_cd": "0553",
+        "h_dpt_dt": "20261024", "h_dpt_tm": "160000", "h_arv_rs_stn_nm": "순천",
+        "h_arv_rs_stn_cd": "0051", "h_arv_dt": "20261024", "h_arv_tm": "190000",
+        "h_run_dt": "20261024", "h_rsv_psb_flg": "Y", "h_rsv_psb_nm": "예약가능",
+        "h_spe_rsv_cd": "11", "h_gen_rsv_cd": "11", "h_wait_rsv_flg": "-1",
+        "h_dpt_stn_cons_ordr": "000003", "h_dpt_stn_run_ordr": "000004",
+        "h_arv_stn_cons_ordr": "000011", "h_arv_stn_run_ordr": "000012",
+    }
+    k, sent = korail_requests(
+        [
+            FakeResponse({"strResult": "SUCC", "trn_infos": {"trn_info": [raw]}}),
+            FakeResponse({"strResult": "SUCC", "h_pnr_no": "P1"}),
+            FakeResponse({"strResult": "SUCC", "jrny_infos": {"jrny_info": []}}),
+        ]
+    )
+    [train] = k.search_train("동탄", "순천", "20261024", "160000")
+    k.reserve(train)
+    search, reserve = sent[0], sent[1]
+    assert search[0] == "POST" and search[2]["AppVersion"] == k._app_version
+    assert search[2]["qryDvCd"] == "1"
+    assert reserve[0] == "POST" and reserve[2]["AppVersion"] == k._app_version
+    assert reserve[2]["txtDptStnConsOrdr1"] == "000003"
+    assert reserve[2]["txtArvStnRunOrdr1"] == "000012"
+    assert "txtTrnNo2" not in reserve[2]
