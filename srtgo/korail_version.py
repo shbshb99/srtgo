@@ -25,8 +25,10 @@ log = logging.getLogger("srtgo.korail_version")
 
 OUTDATED_CODE = "-8204"
 PLAY_URL = "https://play.google.com/store/apps/details?id=com.korail.talk&hl=ko&gl=KR"
-RETRY_AFTER_FAILURE_SECONDS = 30 * 60
-PROBE_PAUSE_SECONDS = 0.5
+# 못 찾았으면 하루 동안은 스스로 다시 찾지 않는다. 코레일이 막은 상태에서 수백 번씩
+# 두드리면 매크로로 보여 PC의 IP 자체가 차단될 수 있다 (오너가 /admin 에서 직접 다시 할 수는 있다).
+RETRY_AFTER_FAILURE_SECONDS = 24 * 3600
+PROBE_PAUSE_SECONDS = 2
 
 _lock = threading.Lock()
 _last_failure = 0.0
@@ -76,6 +78,11 @@ def is_outdated(text: str) -> bool:
     return isinstance(j, dict) and (
         j.get("h_msg_cd") == OUTDATED_CODE or OUTDATED_CODE in str(j.get("h_msg_txt") or "")
     )
+
+
+def is_blocked(ex) -> bool:
+    """코레일이 '최신 버전으로 업데이트' (-8204) 로 막은 오류인가."""
+    return getattr(ex, "code", None) == OUTDATED_CODE or OUTDATED_CODE in str(getattr(ex, "msg", "") or ex)
 
 
 def _parse(v: str):
@@ -172,7 +179,7 @@ def heal(app_version: str, version: str, *, probe_fn=None, store_fn=None, force=
                     _announce((app, api), (app_version, version))
                     return app, api
         _last_failure = time.time()
-        log.error("통과하는 코레일 앱 버전을 찾지 못했습니다. 30분 뒤 다시 시도합니다.")
+        log.error("통과하는 코레일 앱 버전을 찾지 못했습니다. 하루 동안 자동으로 다시 찾지 않습니다.")
         _announce(None, (app_version, version))
         return None
 

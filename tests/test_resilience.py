@@ -376,3 +376,33 @@ def test_many_watches_on_one_rail_slow_down_each(env):
     one = sum(bot._interval("SRT") for _ in range(400)) / 400
     four = sum(bot._interval("KTX") for _ in range(400)) / 400
     assert four > one * 1.6, (one, four)
+
+
+def test_korail_block_stops_watch_instead_of_hammering(env):
+    """코레일이 -8204 로 막으면 계속 두드리지 않는다 (IP 차단 위험). 대기를 멈추고 알린다."""
+    t = ktx_train(527, "200900", "231200", general="13")
+    rail = FakeKorail([t])
+    rail.search_error = ktx.KorailError("최신 버전으로 업데이트해 주세요. (-8204)", "-8204")
+    env.rails[(OWNER, "KTX")] = rail
+
+    async def go():
+        u, w = start(env, OWNER, [t])
+        await until(lambda: not u.watches)
+        n = rail.searches
+        await asyncio.sleep(0.05)
+        assert rail.searches == n == 1, "막힌 뒤에도 계속 조회함"
+
+    run(go())
+    assert "막아(-8204) 대기를 멈췄습니다" in env.tg.texts(OWNER)
+
+
+def test_korail_block_at_login_also_stops(env):
+    t = ktx_train(527, "200900", "231200", general="13")
+    env.rails[(OWNER, "KTX")] = botmod.RailLoginError("KTX", "최신 버전으로 업데이트해 주세요. (-8204)", False)
+
+    async def go():
+        u, w = start(env, OWNER, [t])
+        await until(lambda: not u.watches)
+
+    run(go())
+    assert "막아(-8204)" in env.tg.texts(OWNER)

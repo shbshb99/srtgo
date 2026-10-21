@@ -455,7 +455,10 @@ BENIGN_HINTS = (
 
 
 def classify(ex) -> str:
-    """'login' 다시 로그인 / 'netfunnel' 대기열 키 초기화 / 'benign' 정상(못 잡음) / 'error'."""
+    """'login' 다시 로그인 / 'netfunnel' 대기열 키 초기화 / 'benign' 정상(못 잡음) /
+    'blocked' 코레일이 이 프로그램을 막음(-8204) / 'error'."""
+    if korail_version.is_blocked(ex):
+        return "blocked"
     if isinstance(ex, (NeedToLoginError, SRTNotLoggedInError)):
         return "login"
     if isinstance(ex, SRTNetFunnelError):
@@ -2288,6 +2291,9 @@ class Bot(OpsMixin):
                 except asyncio.CancelledError:
                     raise
                 except RailLoginError as ex:
+                    if korail_version.is_blocked(ex.reason):
+                        await self._blocked(u, w)
+                        return
                     if ex.permanent:
                         # 틀린 비밀번호로 계속 두드리면 계정이 잠긴다. 멈추고 알린다.
                         log.warning("%s: 대기 %s 로그인 거부로 중지: %s", u.chat_id, w.id, ex.reason)
@@ -2321,6 +2327,9 @@ class Bot(OpsMixin):
                 raise
             except Exception as ex:
                 kind = classify(ex)
+                if kind == "blocked":
+                    await self._blocked(u, w)
+                    return
                 if kind == "benign":  # 결과 없음·혼잡: 오류가 아니다
                     trains = []
                 else:
@@ -2369,6 +2378,18 @@ class Bot(OpsMixin):
             await asyncio.sleep(
                 self._backoff(reserve_fails) if problem else self._interval(w.rail_type)
             )
+
+    async def _blocked(self, u, w):
+        """코레일이 막았는데 계속 두드리면 매크로로 보여 IP 가 차단될 수 있다. 멈추고 알린다."""
+        log.warning("%s: 대기 %s 를 멈춤: 코레일이 접속을 막음 (-8204)", u.chat_id, w.id)
+        await self._send_important(
+            u.chat_id,
+            "⛔ 코레일이 이 프로그램의 접속을 막아(-8204) 대기를 멈췄습니다.\n"
+            f"{w.headline()}\n\n"
+            "계속 시도하면 집 인터넷(IP)이 차단될 수 있어 멈춥니다. "
+            "당분간은 코레일+ 앱으로 예매해 주세요.",
+            kb([[HOME]]),
+        )
 
     async def _try_reserve(self, u, w, rail, train):
         """예약 시도는 대기를 멈춰도 끝까지 돌린다.
@@ -2749,8 +2770,10 @@ class Bot(OpsMixin):
                 )
             else:
                 text = (
-                    f"⚠️ 코레일이 앱 버전 {blocked[0]}을(를) 막았는데, 통과하는 버전을 자동으로 찾지 못했습니다.\n"
-                    "30분 뒤 다시 찾습니다. 계속 안 되면 프로그램 업데이트가 필요합니다."
+                    f"⛔ 코레일이 앱 버전 {blocked[0]}을(를) 막았고, 버전만 바꿔서는 풀리지 않았습니다.\n"
+                    "코레일이 이런 프로그램을 막는 쪽으로 바꾼 것으로 보입니다. "
+                    "IP 차단을 피하려고 하루 동안은 자동으로 다시 시도하지 않습니다.\n"
+                    "당분간은 코레일+ 앱으로 예매해 주세요."
                 )
             if loop.is_closed():
                 return
