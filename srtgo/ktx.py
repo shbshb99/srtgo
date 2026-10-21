@@ -15,8 +15,10 @@ except ImportError:
     HAS_CURL_CFFI = False
 import itertools
 import json
+import os
 import re
 import time
+from pathlib import Path
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from datetime import datetime, timedelta
@@ -46,6 +48,26 @@ DEFAULT_HEADERS = {
     "Connection": "Keep-Alive",
     "Accept-Encoding": "gzip",
 }
+
+# 코레일 앱 버전. 서버가 옛 버전을 막으면("최신 버전으로 업데이트해 주세요", -8204)
+# 다시 설치하지 않아도 되게 ~/.srtgo/korail.json 의 {"app_version": "...", "version": "..."} 로
+# 덮어쓸 수 있다. 파일이 없거나 깨져 있으면 아래 기본값을 쓴다.
+KORAIL_APP_VERSION = "7.0.8"
+KORAIL_API_VERSION = "250601003"
+
+
+def korail_versions() -> tuple[str, str]:
+    path = Path(os.environ.get("SRTGO_HOME") or Path.home() / ".srtgo") / "korail.json"
+    try:
+        conf = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        conf = {}
+    if not isinstance(conf, dict):
+        conf = {}
+    app = str(conf.get("app_version") or KORAIL_APP_VERSION).strip()
+    api = str(conf.get("version") or KORAIL_API_VERSION).strip()
+    return app, api
+
 
 KORAIL_ROOT = "https://smart.letskorail.com:443"
 KORAIL_MOBILE = f"{KORAIL_ROOT}/classes/com.korail.mobile"
@@ -532,10 +554,8 @@ class Korail:
             self._session = requests.session()
         self._session.headers.update(DEFAULT_HEADERS)
         self._device = "AD"
-        self._version = "250601003"
-        # 코레일+ 앱 버전(CommonIn.AppVersion). 이게 없으면 서버가 "최신 버전으로
-        # 업데이트해 주세요"(-8204)로 조회·예약을 막는다. 앱이 올라가 다시 막히면 여기만 올린다.
-        self._app_version = "7.0.8"
+        # Version(API 계약)과 AppVersion(앱 버전)이 낮으면 서버가 -8204로 막는다.
+        self._app_version, self._version = korail_versions()
         self._key = "korail1234567890"
         self._idx = None
         self._dynapath_device_id = generate_dynapath_device_id()

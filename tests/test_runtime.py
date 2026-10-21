@@ -258,3 +258,13 @@ def test_korail_search_and_reserve_send_app_version_and_station_order():
     assert reserve[2]["txtDptStnConsOrdr1"] == "000003"
     assert reserve[2]["txtArvStnRunOrdr1"] == "000012"
     assert "txtTrnNo2" not in reserve[2]
+
+
+def test_korail_version_can_be_overridden_without_reinstall(tmp_path, monkeypatch):
+    monkeypatch.setenv("SRTGO_HOME", str(tmp_path))
+    assert ktx.Korail("a", "b", auto_login=False)._app_version == ktx.KORAIL_APP_VERSION
+    (tmp_path / "korail.json").write_text('﻿{"app_version": "7.1.0", "version": "251001001"}', encoding="utf-8")
+    k = ktx.Korail("a", "b", auto_login=False)
+    assert (k._app_version, k._version) == ("7.1.0", "251001001")
+    (tmp_path / "korail.json").write_text("{깨짐", encoding="utf-8")
+    assert ktx.Korail("a", "b", auto_login=False)._app_version == ktx.KORAIL_APP_VERSION
