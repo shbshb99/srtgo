@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2+ktx.13",
-  "wheel": "srtgo-2.2.2+ktx.13-py3-none-any.whl",
-  "sha256": "a27baa071a53d73583b23a7e71410e14787fa0249897e588f1a9de7dac9b0bb2",
-  "notes": "코레일이 막으면(-8204) 대기를 멈추고, 자동 재시도도 하루 쉽니다 (집 IP 차단 방지). 폰으로 관리(/admin) 포함."
+  "version": "2.2.2+ktx.14",
+  "wheel": "srtgo-2.2.2+ktx.14-py3-none-any.whl",
+  "sha256": "f6eb097a513e12496d7eda57842c1de40c43c08082b44f30112b37edc3154e14",
+  "notes": "코레일 앱 버전 7.0.10 적용. /admin → ✏️ 앱 버전 입력으로 폰에서 버전을 바꿀 수 있습니다. 코레일이 막으면 대기를 멈춥니다(IP 차단 방지)."
 }
