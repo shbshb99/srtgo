@@ -89,7 +89,7 @@ def test_ktx_full_flow_reserves_once(env):
         u = env.bot.context_for(OWNER)
         (w,) = u.watches.values()
         assert w.selected == [("527", day(), "200900")]
-        assert json.loads(env.path.read_text())["watches"][OWNER][0]["selected"] == [["527", day(), "200900"]]
+        assert json.loads(env.path.read_text(encoding="utf-8"))["watches"][OWNER][0]["selected"] == [["527", day(), "200900"]]
 
         # 매진인데 예약대기를 껐으니 예약하지 않는다
         await until(lambda: rail.searches >= 6)
@@ -106,7 +106,7 @@ def test_ktx_full_flow_reserves_once(env):
         assert option == ktx.ReserveOption.GENERAL_ONLY
         text = env.tg.texts(OWNER)
         assert "🎉 예매 성공" in text and "8호차 3D" in text
-        assert json.loads(env.path.read_text())["watches"] == {}
+        assert json.loads(env.path.read_text(encoding="utf-8"))["watches"] == {}
 
     run(go())
 
@@ -249,7 +249,7 @@ def test_favorite_stations_editor(env):
         await f.press("book:KTX")
         deps = [d for d in f.screen.data() if d.startswith("dep:")]
         assert deps == [f"dep:{s}" for s in mine]
-        assert json.loads(env.path.read_text())["prefs"][FAMILY]["stations"]["KTX"] == mine
+        assert json.loads(env.path.read_text(encoding="utf-8"))["prefs"][FAMILY]["stations"]["KTX"] == mine
 
         # 마지막 하나는 뺄 수 없다
         u.set_stations("KTX", ["부산"])
@@ -260,7 +260,7 @@ def test_favorite_stations_editor(env):
 
         await f.press("favreset:KTX")
         assert u.stations("KTX") == ["서울", "수서", "대전", "동대구", "부산"]
-        assert "KTX" not in json.loads(env.path.read_text())["prefs"][FAMILY].get("stations", {})
+        assert "KTX" not in json.loads(env.path.read_text(encoding="utf-8"))["prefs"][FAMILY].get("stations", {})
 
     run(go())
 
@@ -391,7 +391,7 @@ def test_multiple_watches_per_user_and_caps(env, monkeypatch):
         assert len(u.watches) == 1 and "멈췄습니다" in f.screen.text
         await f.command("stop")  # 하나 남으면 바로 멈춘다
         assert not u.watches and "대기를 멈췄습니다" in f.screen.text
-        assert json.loads(env.path.read_text())["watches"] == {}
+        assert json.loads(env.path.read_text(encoding="utf-8"))["watches"] == {}
 
     run(go())
 

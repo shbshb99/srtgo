@@ -300,9 +300,9 @@ def test_watches_survive_restart(env):
         await env.bot.shutdown()
 
     run(first())
-    saved = json.loads(env.path.read_text())
+    saved = json.loads(env.path.read_text(encoding="utf-8"))
     assert len(saved["watches"][FAMILY]) == 2, "꺼질 때 대기가 저장되지 않음"
-    assert "pw" not in env.path.read_text()
+    assert "pw" not in env.path.read_text(encoding="utf-8")
 
     tg2 = FakeTG()
     bot2 = fast(botmod.Bot(OWNER, botmod.StateStore(env.path), tg=tg2))
@@ -318,7 +318,7 @@ def test_watches_survive_restart(env):
         t.general_seat = "11"
         await until(lambda: not u2.watches)
         assert "🎉 예매 성공" in tg2.texts(FAMILY)
-        assert json.loads(env.path.read_text())["watches"] == {}
+        assert json.loads(env.path.read_text(encoding="utf-8"))["watches"] == {}
 
     run(second())
 
