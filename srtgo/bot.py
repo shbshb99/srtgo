@@ -44,6 +44,7 @@ from telegram.ext import (
 )
 
 from . import korail_version
+from .ops import OpsMixin
 from .ktx import (
     AdultPassenger,
     ChildPassenger,
@@ -163,6 +164,7 @@ COMMANDS = (
     ("stop", "대기 중지"),
     ("settings", "설정: 역·승객·계정"),
     ("help", "도움말"),
+    ("admin", "관리: 업데이트·재시작·기록 (관리자)"),
 )
 
 KST = timezone(timedelta(hours=9))
@@ -1006,7 +1008,7 @@ class Reply:
 
 
 # --- 봇 -------------------------------------------------------------------
-class Bot:
+class Bot(OpsMixin):
     # 놓치면 안 되는 알림을 다시 보내는 간격, 예약 결과를 다시 확인하는 간격 (초)
     IMPORTANT_SEND_DELAYS = (0, 5, 15, 30, 60, 120, 300)
     VERIFY_DELAYS = (0, 3, 10)
@@ -1284,6 +1286,7 @@ class Bot:
         if u.is_owner:
             pending = len(self.store.users("pending"))
             rows.append([(f"👥 사용자 관리{f' (승인 대기 {pending})' if pending else ''}", "users")])
+            rows.append([("🛠 관리 (업데이트·재시작·기록)", "ops")])
         return kb(rows)
 
     async def show_home(self, r, note=None):
@@ -1316,7 +1319,8 @@ class Bot:
                 "⚙️ 설정: 자주 쓰는 역(⭐), 역 직접 추가, 승객 유형(어린이·경로·장애인), KTX만 검색, 코레일 계정 연결",
                 "",
                 "명령어",
-                "/start 메뉴 · /status 대기 상황 · /stop 대기 중지 · /settings 설정 · /help 도움말",
+                "/start 메뉴 · /status 대기 상황 · /stop 대기 중지 · /settings 설정 · /help 도움말"
+                + (" · /admin 관리(업데이트·재시작·기록)" if u.is_owner else ""),
                 "",
                 "봇은 운영PC에서 항상 켜져 있고, 재시작돼도 대기를 이어갑니다.",
                 "조회 중 오류가 나도 멈추지 않고 계속 재시도합니다.",
@@ -2706,6 +2710,10 @@ class Bot:
                 log.info("워치독 요청으로 봇을 종료합니다 (업데이트)")
                 app.stop_running()
                 return
+            try:
+                await self._ops_tick()
+            except Exception as ex:  # 관리 알림이 실패해도 하트비트는 계속 쓴다
+                log.warning("관리 알림 처리 실패: %s", ex)
             updater = getattr(app, "updater", None)
             if updater is None or updater.running:
                 try:
@@ -2716,6 +2724,7 @@ class Bot:
 
     async def post_init(self, app):
         self.tg = app.bot
+        self._app = app
         try:
             await app.bot.set_my_commands([BotCommand(c, d) for c, d in COMMANDS])
         except TelegramError as ex:
@@ -2723,6 +2732,8 @@ class Bot:
         if self.heartbeat_path is not None:
             self._heartbeat_task = asyncio.create_task(self._heartbeat(app))
         self._watch_korail_version()
+        if self.heartbeat_path is not None:
+            self._ops_task(self._maybe_take_over_watchdog())
         await self.resume_watches()
         log.info("봇 준비 완료")
 
@@ -2753,6 +2764,7 @@ class Bot:
             # 예약 처리 중이면 결과 알림까지는 끝내게 잠깐 기다린다.
             await asyncio.wait(set(self._bg), timeout=20)
         tasks = list(self._bg) + [t for u in self.contexts.values() for t in u.tasks.values()]
+        tasks += list(self._ops_tasks or ())
         if self._heartbeat_task is not None:
             tasks.append(self._heartbeat_task)
             self._heartbeat_task = None
@@ -2781,6 +2793,7 @@ def build_application(bot, token, base_url=None):
     app = builder.build()
     app.add_handler(CommandHandler(["start", "menu"], bot.cmd_start))
     app.add_handler(CommandHandler("help", bot.cmd_help))
+    app.add_handler(CommandHandler("admin", bot.cmd_admin))
     app.add_handler(CommandHandler("status", bot.cmd_status))
     app.add_handler(CommandHandler("stop", bot.cmd_stop))
     app.add_handler(CommandHandler(["settings", "setting"], bot.cmd_settings))

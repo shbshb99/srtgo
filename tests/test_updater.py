@@ -144,8 +144,9 @@ def test_watchdog_stops_bot_gracefully_then_installs(tmp_path, monkeypatch):
         hb.with_name("stopped_cleanly").write_text("yes")
     """))
     monkeypatch.setattr(wd, "BOT_COMMAND", [sys.executable, str(fake_bot)])
-    monkeypatch.setattr(wd, "STARTUP_GRACE_SECONDS", 0)
+    monkeypatch.setattr(wd, "STARTUP_GRACE_SECONDS", 0.5)
     monkeypatch.setattr(wd, "POLL_SECONDS", 0.1)
+    (e.home / up.APPROVED_FILE).write_text("2.2.2+ktx.11")  # 오너가 폰에서 승인
     order = []
     real_install = e.u.install
     e.u.install = lambda *a: order.append((e.home / "stopped_cleanly").exists()) or real_install(*a)
@@ -153,6 +154,7 @@ def test_watchdog_stops_bot_gracefully_then_installs(tmp_path, monkeypatch):
     assert reason == wd.UPDATE_REASON and code == 0
     assert order == [True], "봇이 꺼지기 전에 설치함"
     assert e.installed and not (e.home / wd.RESTART_REQUEST_FILE).exists()
+    assert not (e.home / up.APPROVED_FILE).exists() and not (e.home / up.AVAILABLE_FILE).exists()
 
 
 def test_bot_stops_itself_on_restart_request(tmp_path):
@@ -169,3 +171,49 @@ def test_bot_stops_itself_on_restart_request(tmp_path):
 
     asyncio.run(asyncio.wait_for(b._heartbeat(App()), 2))
     assert stopped == [True] and not (tmp_path / wd.RESTART_REQUEST_FILE).exists()
+
+
+# --- 승인 흐름 ------------------------------------------------------------
+def test_new_version_waits_for_owner_approval(tmp_path):
+    e = Env(tmp_path, rel=release("2.2.2+ktx.11"))
+    info = e.u.check()
+    assert up.read_json(e.home / up.AVAILABLE_FILE)["version"] == "2.2.2+ktx.11"
+    assert not e.u.approved(info), "승인 없이 설치하려 함"
+    (e.home / up.APPROVED_FILE).write_text("2.2.2+ktx.10")  # 다른 버전 승인은 무효
+    assert not e.u.approved(info)
+    (e.home / up.APPROVED_FILE).write_text("2.2.2+ktx.11")
+    assert e.u.approved(info)
+
+
+def test_auto_and_off_modes(tmp_path):
+    e = Env(tmp_path, rel=release("2.2.2+ktx.11"))
+    info = e.u.check()
+    up.set_mode(e.home, "auto")
+    assert up.mode(e.home) == "auto" and e.u.approved(info)
+    up.set_mode(e.home, "off")
+    assert up.mode(e.home) == "off" and not e.u.approved(info) and not e.u.due()
+    up.set_mode(e.home, "approve")
+    assert up.mode(e.home) == "approve"
+
+
+def test_check_now_request_is_honoured_and_cleared(tmp_path):
+    e = Env(tmp_path, rel=release("2.2.2+ktx.10"))
+    e.u.next_check = time.time() + 9999
+    assert not e.u.due()
+    (e.home / up.CHECK_NOW_FILE).write_text("")
+    assert e.u.due()
+    assert e.u.check() is None
+    assert not (e.home / up.CHECK_NOW_FILE).exists()
+    assert up.read_json(e.home / "update_checked.json")["latest"] == "2.2.2+ktx.10"
+
+
+def test_results_are_recorded_for_the_owner(tmp_path):
+    e = Env(tmp_path, rel=release("2.2.2+ktx.11"))
+    e.u.install(*e.u.find_update())
+    e.u.confirm()
+    assert up.read_json(e.home / up.RESULT_FILE)["status"] == "installed"
+    (tmp_path / "b").mkdir()
+    e2 = Env(tmp_path / "b", rel=release("2.2.2+ktx.11"))
+    e2.u.install(*e2.u.find_update())
+    e2.u.after_run(ran_seconds=1, code=1, healthy_after=120)
+    assert up.read_json(e2.home / up.RESULT_FILE)["status"] == "rolled_back"

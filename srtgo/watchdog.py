@@ -20,7 +20,11 @@ import sys
 import time
 from pathlib import Path
 
-from .updater import Updater
+from .updater import APPROVED_FILE, WATCHDOG_VERSION_FILE, Updater, installed_version, remove
+
+# 이 워치독 코드가 들어 있던 버전. 업데이트로 디스크의 코드가 바뀌어도 이 값은 그대로라,
+# 봇은 이걸 보고 워치독이 옛 코드로 돌고 있는지 안다.
+WATCHDOG_VERSION = installed_version()
 
 # 봇은 20초마다 하트비트를 쓴다. 이만큼 끊기면 멈춘 것으로 본다.
 HEARTBEAT_STALE_SECONDS = 180
@@ -132,7 +136,8 @@ def run_once(log, heartbeat: Path, updater=None):
     started = time.time()
     # 창 없이(pythonw) 돌면 봇이 import 단계에서 죽을 때의 오류가 어디에도 안 남는다.
     console = open_console_log(heartbeat.parent)
-    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    # 봇이 "나를 띄운 워치독이 옛 코드인지" 알 수 있게 버전을 넘겨준다 (takeover 참고).
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", SRTGO_WATCHDOG_VERSION=WATCHDOG_VERSION)
     try:
         proc = subprocess.Popen(BOT_COMMAND, stdout=console, stderr=subprocess.STDOUT, env=env)
     finally:
@@ -152,11 +157,16 @@ def run_once(log, heartbeat: Path, updater=None):
                     updater.confirm()  # 막 설치한 버전이 잘 떴다
                     confirmed = True
                 if updater.due():
-                    found = updater.find_update()
-                    if found:
-                        log.warning("새 버전 %s 설치를 위해 봇을 잠시 끕니다.", found[0])
+                    updater.check()
+                info = updater.available()
+                if updater.approved(info):
+                    wheel = updater.download(info)
+                    if wheel is None:
+                        remove(heartbeat.with_name(APPROVED_FILE))  # 다시 승인하면 다시 받는다
+                    else:
+                        log.warning("새 버전 %s 설치를 위해 봇을 잠시 끕니다.", info["version"])
                         stop_for_update(log, proc, heartbeat)
-                        updater.install(*found)
+                        updater.install(info["version"], wheel)
                         return proc.wait(), time.time() - started, UPDATE_REASON
             if age is None or age > HEARTBEAT_STALE_SECONDS:
                 reason = "하트비트 없음" if age is None else f"하트비트 {int(age)}초째 끊김"
@@ -175,19 +185,79 @@ def run_once(log, heartbeat: Path, updater=None):
         raise
 
 
+def updater_mode_name(home: Path) -> str:
+    from .updater import mode
+
+    return {"off": "꺼짐", "auto": "자동 설치", "approve": "승인 후 설치"}[mode(home)]
+
+
+def kill_process(pid: int) -> None:
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+    else:
+        import signal
+
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def pid_alive(pid: int) -> bool:
+    if os.name == "nt":
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True)
+        return str(pid) in (out.stdout or "")
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def take_over(log, home: Path, old_pid: int, bot_pid=None):
+    """옛 코드로 돌던 워치독을 끝내고 그 자리를 잇는다. 잠금을 잡으면 그 잠금을 돌려준다.
+
+    봇은 그대로 둔다: 봇이 스스로 꺼지면(대기를 저장하고) 새 워치독이 새 봇을 띄운다.
+    """
+    log.warning("옛 워치독(pid %s)을 새 코드로 바꿉니다.", old_pid)
+    kill_process(old_pid)  # 먼저 끝내야 봇이 꺼졌을 때 옛 워치독이 옛 방식으로 다시 띄우지 않는다
+    deadline = time.time() + 60
+    lock = None
+    while time.time() < deadline:
+        lock = acquire_lock(home / "watchdog.lock")
+        if lock is not None:
+            break
+        time.sleep(1)
+    # 봇이 대기를 저장하고 스스로 꺼질 때까지 기다린다 (아니면 새 봇이 '이미 실행 중'으로 막힌다).
+    while bot_pid and pid_alive(bot_pid) and time.time() < deadline + 60:
+        time.sleep(1)
+    return lock
+
+
 def main():
     home = data_dir()
     log = setup_logging(home)
 
-    lock = acquire_lock(home / "watchdog.lock")
+    args = sys.argv[1:]
+    if len(args) in (2, 3) and args[0] == "--takeover" and all(x.isdigit() for x in args[1:]):
+        lock = take_over(log, home, int(args[1]), int(args[2]) if len(args) == 3 else None)
+    else:
+        lock = acquire_lock(home / "watchdog.lock")
     if lock is None:
-        log.error("워치독이 이미 실행 중입니다. 종료합니다.")
-        sys.exit(1)
+        # 작업 스케줄러가 다시 띄운 경우 등. 실패 코드로 끝내면 스케줄러가 계속 재시도하므로 0 으로 끝낸다.
+        log.info("워치독이 이미 실행 중입니다. 종료합니다.")
+        sys.exit(0)
+    try:
+        (home / WATCHDOG_VERSION_FILE).write_text(WATCHDOG_VERSION)
+    except OSError:
+        pass
 
     heartbeat = home / "heartbeat"
     backoff = MIN_BACKOFF_SECONDS
     updater = Updater(home, log)
-    log.info("워치독 시작 (기록: %s, 자동 업데이트 %s)", home, "켜짐" if updater.enabled() else "꺼짐")
+    log.info("워치독 %s 시작 (기록: %s, 업데이트 %s)", WATCHDOG_VERSION, home, updater_mode_name(home))
     try:
         while True:
             code, ran, reason = run_once(log, heartbeat, updater)

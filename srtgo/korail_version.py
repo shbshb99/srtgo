@@ -147,7 +147,7 @@ def probe(app_version: str, version: str) -> bool:
         time.sleep(PROBE_PAUSE_SECONDS)
 
 
-def heal(app_version: str, version: str, *, probe_fn=None, store_fn=None):
+def heal(app_version: str, version: str, *, probe_fn=None, store_fn=None, force=False):
     """막힌 (app_version, version) 대신 통과하는 값을 찾는다. 찾으면 저장하고 돌려준다.
 
     다른 Korail 객체가 이미 찾아 두었으면 그 값을 바로 쓴다.
@@ -160,7 +160,7 @@ def heal(app_version: str, version: str, *, probe_fn=None, store_fn=None):
         saved = (conf.get("app_version"), conf.get("version"))
         if all(saved) and saved != (app_version, version):
             return saved
-        if time.time() - _last_failure < RETRY_AFTER_FAILURE_SECONDS:
+        if not force and time.time() - _last_failure < RETRY_AFTER_FAILURE_SECONDS:
             return None
         log.warning("코레일이 앱 버전 %s/%s 를 막았습니다. 맞는 버전을 찾습니다.", app_version, version)
         store = store_fn()

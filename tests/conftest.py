@@ -386,6 +386,7 @@ class Phone:
             "status": self.bot.cmd_status,
             "stop": self.bot.cmd_stop,
             "settings": self.bot.cmd_settings,
+            "admin": self.bot.cmd_admin,
         }.get(name, self.bot.cmd_unknown)
         await handler(self._update(message=UserMsg("/" + name)), self.ctx)
 

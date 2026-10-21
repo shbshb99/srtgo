@@ -64,7 +64,7 @@ def test_application_builds_with_all_handlers():
     bot = botmod.Bot(OWNER, botmod.StateStore(), tg=FakeTG())
     app = botmod.build_application(bot, "123456:TESTTOKEN")
     names = [type(h).__name__ for h in app.handlers[0]]
-    assert names.count("CommandHandler") == 5
+    assert names.count("CommandHandler") == 6
     assert "CallbackQueryHandler" in names and names.count("MessageHandler") == 3
     assert app.error_handlers
 
@@ -76,7 +76,7 @@ def test_post_init_registers_command_menu_and_heartbeat(env, tmp_path, monkeypat
 
     async def go():
         await env.bot.post_init(app)
-        assert [c.command for c in env.tg.commands] == ["start", "status", "stop", "settings", "help"]
+        assert [c.command for c in env.tg.commands] == ["start", "status", "stop", "settings", "help", "admin"]
         await until(lambda: env.bot.heartbeat_path.exists())
         await env.bot.shutdown()
 

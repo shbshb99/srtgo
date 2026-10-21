@@ -29,6 +29,11 @@ dependencies = [
     "termcolor"
 ]
 dynamic = ["version"]
+
+[tool.setuptools]
+# updates/(배포용 휠)와 scripts/ 는 패키지가 아니다.
+packages = ["srtgo"]
+
 [tool.setuptools_scm]
 
 [project.urls]

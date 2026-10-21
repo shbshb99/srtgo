@@ -186,7 +186,7 @@ def test_real_telegram_application_end_to_end(monkeypatch, tmp_path, fake_keyrin
         while not server.called("setMyCommands") and time.time() < end:
             time.sleep(0.02)
         commands = server.called("setMyCommands")[0]["commands"]
-        assert [c["command"] for c in commands] == ["start", "status", "stop", "settings", "help"]
+        assert [c["command"] for c in commands] == ["start", "status", "stop", "settings", "help", "admin"]
 
         server.say(OWNER, "/start")
         screen = server.wait_screen(OWNER, "무엇을 할까요")
