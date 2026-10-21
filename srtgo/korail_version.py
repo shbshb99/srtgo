@@ -30,6 +30,11 @@ PLAY_URL = "https://play.google.com/store/apps/details?id=com.korail.talk&hl=ko&
 RETRY_AFTER_FAILURE_SECONDS = 24 * 3600
 PROBE_PAUSE_SECONDS = 2
 
+# 요청이 막힐 때 스스로 버전을 찾아 나서는지. 2026-10-21 코레일+ 7.0.10 으로도 막혀,
+# 버전이 아니라 접속 자체를 막은 것으로 확인됐다. 이때 자동으로 찾으면 수 분 동안 수백 번
+# 두드리게 되므로 끈다. 오너가 /admin 의 '코레일 버전 점검'·'앱 버전 입력'으로만 시도한다.
+AUTO_HEAL = False
+
 _lock = threading.Lock()
 _last_failure = 0.0
 # 버전을 바꿨거나(found=(app, api)) 못 찾았을 때(found=None) 불린다. 봇이 오너에게 알리는 데 쓴다.
@@ -206,6 +211,8 @@ class GuardedSession:
         if not is_outdated(getattr(r, "text", "")):
             return r
         k = self._korail
+        if not AUTO_HEAL:
+            return r
         # 막힌 건 이 요청에 실린 값이다 (그사이 다른 요청이 k 의 값을 이미 고쳤을 수 있다).
         found = heal(payload.get("AppVersion", k._app_version), payload["Version"])
         if not found:

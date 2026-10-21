@@ -56,7 +56,18 @@ def guarded(server):
     return k
 
 
+def test_blocked_request_does_not_hammer_by_default(home, monkeypatch):
+    """자동 찾기는 꺼져 있다: 막히면 그대로 실패하고 버전을 찾으러 두드리지 않는다."""
+    server = Server("7.1.0")
+    monkeypatch.setattr(kv, "probe", lambda a, v: pytest.fail("자동으로 버전을 찾으러 감"))
+    k = guarded(server)
+    with pytest.raises(ktx.KorailError) as ei:
+        k.search_train("동탄", "순천", "20261024", "160000")
+    assert kv.is_blocked(ei.value) and len(server.sent) == 1
+
+
 def test_blocked_search_finds_new_version_saves_it_and_retries(home, monkeypatch):
+    monkeypatch.setattr(kv, "AUTO_HEAL", True)
     server = Server("7.1.0")
     probed = []
     monkeypatch.setattr(kv, "probe", lambda a, v: probed.append((a, v)) or fake_probe(server)(a, v))
