@@ -2526,10 +2526,12 @@ class Bot(OpsMixin):
                     if ex.permanent:
                         # 틀린 비밀번호로 계속 두드리면 계정이 잠긴다. 멈추고 알린다.
                         log.warning("%s: 대기 %s 로그인 거부로 중지: %s", u.chat_id, w.id, ex.reason)
+                        unsure = str(ex.reason).startswith(human_client.LOGIN_UNKNOWN_MSG[:12])
                         await self._send(
                             u.chat_id,
-                            f"🔑 {ACCOUNT_NAME[w.rail_type]} 로그인이 거부되어 대기를 멈췄습니다.\n"
-                            f"사유: {ex.reason}\n\n{w.headline()}\n"
+                            f"🔑 {ACCOUNT_NAME[w.rail_type]} "
+                            f"{'로그인 결과를 확인하지 못해' if unsure else '로그인이 거부되어'} 대기를 멈췄습니다.\n"
+                            f"사유: {human_client.mask_personal(ex.reason, 200)}\n\n{w.headline()}\n"
                             "계정을 다시 연결한 뒤 새로 시작해 주세요. "
                             "(계속 시도하면 계정이 잠길 수 있어 멈춥니다)",
                             kb([[("🔑 코레일 계정 연결", f"link:{BOOKING_RAIL}")], [HOME]]),

@@ -1,4 +1,4 @@
-﻿"""코레일 웹 로그인·예약(결제 전 단계까지). 실제 코레일은 부르지 않고 가짜 화면 값으로 시험한다."""
+"""코레일 웹 로그인·예약(결제 전 단계까지). 실제 코레일은 부르지 않고 가짜 화면 값으로 시험한다."""
 import json
 from datetime import datetime
 
@@ -76,7 +76,7 @@ def test_classify_login_failure():
     assert hc.classify_login_failure("로그인 정보를 다시 확인해 주세요. 비밀번호 5회 연속 오류시 로그인이 제한됩니다")[0] == "account"
     assert hc.classify_login_failure("인증되지 않은 휴대전화번호입니다")[0] == "account"
     kind, why = hc.classify_login_failure("전혀 모르는 안내 " * 40)
-    assert kind == "other" and len(why) == 200
+    assert kind == "other" and len(why) == 100
 
 
 def test_login_failure_text_is_passed_on_instead_of_unknown(monkeypatch, tmp_path):
@@ -84,8 +84,9 @@ def test_login_failure_text_is_passed_on_instead_of_unknown(monkeypatch, tmp_pat
     monkeypatch.setattr(hc, "is_logged_in", lambda: False)
     monkeypatch.setattr(hc, "_state", lambda *a, **k: {
         "url": "https://www.korail.com/ticket/login", "loggedOut": True, "modal": "", "body": "점검 중입니다 " * 40})
+    monkeypatch.setattr(hc.time, "sleep", lambda s: None)
     ok, why = hc.login_with("1234567890", "pw")
-    assert not ok and "사유 미상" not in why and why.startswith("점검 중입니다")
+    assert not ok and why == hc.LOGIN_UNKNOWN_MSG and "점검" not in why   # 화면 본문은 내보내지 않는다
 
 
 def test_standby_text_hidden_for_web_reserve(monkeypatch):
@@ -180,7 +181,7 @@ def test_login_with_reuses_session_and_reports_reason(monkeypatch, tmp_path):
 
     def _state_ok(actions=None, url=None, query=None):
         seq.append(actions)
-        return {"url": "https://www.korail.com/ticket/main", "loggedOut": False, "modal": ""}
+        return {"url": "https://www.korail.com/ticket/main", "loggedOut": False, "modal": "", "body": "승차권예매 로그아웃 홍길동 님 마일리지 : 1234p"}
     monkeypatch.setattr(hc, "_state", _state_ok)
     assert hc.login_with("1234567890", "pw") == (True, None)
     n = len(seq)

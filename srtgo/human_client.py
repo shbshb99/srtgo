@@ -361,8 +361,11 @@ LOGIN_ID_MARK = OUT_DIR / "login_id.sha"   # 로그인된 계정의 해시(아�
 STATE_JS = r"""(async () => {
   const t = s => (document.querySelector(s) || {}).innerText || '';
   const modal = [...document.querySelectorAll('.ReactModal__Content, [role=dialog]')].map(e => e.innerText.replace(/\s+/g, ' ').trim()).filter(Boolean).join(' | ');
-  return JSON.stringify({url: location.href, loggedOut: !!document.querySelector('a.btnGoLogin, .logoutBtn'),
-    modal: modal.slice(0, 400), body: document.body.innerText.replace(/\s+/g, ' ').slice(0, 2500)});
+  const body = document.body.innerText.replace(/\s+/g, ' ');
+  return JSON.stringify({url: location.href, loggedOut: !!document.querySelector('a.btnGoLogin'),
+    loginForm: !!document.querySelector('input#password'),
+    logoutLink: [...document.querySelectorAll('a, button')].some(e => (e.innerText || '').trim() === '로그아웃'),
+    modal: modal.slice(0, 400), body: body.slice(0, 2500)});
 })()
 """
 
@@ -469,14 +472,45 @@ def login_id_problem(user_id):
     return None
 
 
+LOGIN_UNKNOWN_MSG = "로그인 정보 확인 못 함(화면에서 성공인지 실패인지 가리지 못했습니다)"
+
+
+def mask_personal(text, limit=100):
+    """알림·로그에 나가는 짧은 문구에서 개인 값을 가린다: '님' 앞 글자, 4자리 이상 숫자."""
+    import re
+    t = " ".join((text or "").split())[:limit]
+    t = re.sub(r"[가-힣A-Za-z]+(\s?님)", r"***\1", t)
+    return re.sub(r"\d{4,}", "****", t)
+
+
+def judge_login(st):
+    """로그인 시도 뒤 화면을 판정한다. 돌려주는 값: 'ok' / 'fail' / 'unknown'.
+    성공 표시를 여러 개 함께 본다: 주소가 로그인 화면이 아님, 위 메뉴의 '로그아웃', '님 마일리지' 칸, 로그인 양식 없음.
+    로그인 양식이나 오류 안내창이 남아 있으면 실패다."""
+    import re
+    url, body, modal = st.get("url", ""), st.get("body", "") or "", st.get("modal", "") or ""
+    on_login = "/login" in url
+    form = st.get("loginForm")
+    if form is None:   # 옛 읽기 결과: 글로 짐작한다(양식 칸 이름이 보이고 로그아웃이 없음)
+        form = "비밀번호" in body and "로그아웃" not in body
+    logout = bool(st.get("logoutLink")) or "로그아웃" in body
+    welcome = bool(re.search(r"님\s*마일리지|마일리지\s*:\s*\d", body))
+    if form or (on_login and modal):
+        return "fail"
+    if not on_login and (logout or welcome):
+        return "ok"
+    return "unknown"
+
+
 def classify_login_failure(text):
     """로그인 화면에 남은 안내 문구를 가린다. 돌려주는 값: (종류, 알릴 문구). 종류는 'format'(아이디 형식)·'account'(계정·비밀번호, 다시 두드리지 않음)·'other'."""
     t = " ".join((text or "").split())
+    short = mask_personal(t)   # 알림에는 앞 100자만, 개인 값은 가려서 보낸다
     if "정확하게 입력" in t:
-        return "format", LOGIN_FORMAT_MSG + ": " + t[:150]
+        return "format", LOGIN_FORMAT_MSG + ": " + short
     if any(k in t for k in ("비밀번호", "일치하지", "등록되지", "가입되지", "인증되지", "제한", "잠", "탈퇴", "휴면", "로그인 정보")):
-        return "account", t[:200]
-    return "other", t[:200]
+        return "account", short
+    return "other", short
 
 
 def build_login_actions(user_id, password):
@@ -492,7 +526,7 @@ def build_login_actions(user_id, password):
 def is_logged_in():
     """상시 브라우저에 로그인 상태(쿠키)가 남아 있는지만 본다. 입력은 하지 않는다."""
     st = _state(url="https://www.korail.com/ticket/search/general")
-    return not st.get("loggedOut", True)
+    return judge_login(st) == "ok"
 
 
 def login(chat_id, rail_type="KTX", creds=None):
@@ -520,14 +554,21 @@ def login_with(user_id, password):
         except OSError:
             pass
         st = _state(build_login_actions(user_id, password), url=LOGIN_URL, query="login|%f" % _clock())
-        if not st.get("loggedOut", True) and "/login" not in st.get("url", ""):
+        verdict = judge_login(st)
+        if verdict == "unknown":   # 화면이 바뀌는 중일 수 있다. 입력은 다시 하지 않고 메인 화면을 열어 읽기만 한 번 더 한다
+            time.sleep(2)
+            st = _state(url="https://www.korail.com/ticket/main", query="login-reread|%f" % _clock())
+            verdict = judge_login(st)
+        if verdict == "ok":
             try:
                 OUT_DIR.mkdir(parents=True, exist_ok=True)
                 LOGIN_ID_MARK.write_text(want)
             except OSError:
                 pass
             return True, None
-        text = st.get("modal") or st.get("body") or ""
+        if verdict == "unknown":
+            return False, LOGIN_UNKNOWN_MSG   # 화면 본문은 내보내지 않는다
+        text = st.get("modal") or ""   # 안내창 문구만 쓴다(화면 본문은 이름·마일리지가 들어 있을 수 있다)
         kind, why = classify_login_failure(text)
         if not text.strip():
             why = "로그인 화면에서 벗어나지 못했고 화면에 안내 문구가 없습니다"
@@ -596,7 +637,7 @@ def reserve(train, special=False, chat_id=None, rail_type="KTX", creds=None):
         try:
             OUT_DIR.mkdir(parents=True, exist_ok=True)
             (OUT_DIR / ("reserve_%s.txt" % datetime.now().strftime("%Y%m%d_%H%M%S"))).write_text(
-                "%s\n%s\n%s" % (st.get("url"), kind, text[:2500]), encoding="utf-8")
+                "%s\n%s\n%s" % (st.get("url"), kind, mask_personal(text, 800)), encoding="utf-8")   # 이름·마일리지를 가린다
         except OSError:
             pass
         if kind == "ok":
@@ -609,7 +650,7 @@ def reserve(train, special=False, chat_id=None, rail_type="KTX", creds=None):
             except OSError:
                 pass
             raise HumanReserveError("로그인이 풀려 예약하지 못했습니다(다음 시도에서 다시 로그인)", definite=True)
-        raise HumanReserveError("예약 거절: " + text[:200], definite=True)
+        raise HumanReserveError("예약 거절: " + mask_personal(text, 200), definite=True)
 
 
 def search_train(dep, arr, date=None, time=None, train_type="109", passengers=None,
