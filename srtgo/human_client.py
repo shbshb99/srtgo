@@ -390,21 +390,72 @@ def _post_state(url, actions, query, js=STATE_JS, smart=None):
     return _send(api, body, HumanReserveError, definite=False)
 
 
+LOGIN_FORMAT_MSG = "아이디 형식이 웹 로그인 칸과 안 맞음(아이디 종류를 확인하세요)"
+
+
+def clean_id(user_id):
+    """저장된 아이디의 겉모양만 정리한다(전각 문자·공백·줄바꿈·눈에 안 보이는 글자)."""
+    import re
+    import unicodedata
+    return re.sub(r"[\s​-‏﻿]", "", unicodedata.normalize("NFKC", user_id or ""))
+
+
 def login_tab(user_id):
-    """코레일 웹 로그인 화면의 탭: 회원번호 / 이메일 / 휴대폰."""
-    if "@" in user_id:
+    """코레일 웹 로그인 화면의 탭: 회원번호 / 이메일 / 휴대폰. 판별 결과만 돌려주고 값은 다루지 않는다.
+    웹 칸은 회원번호 숫자 10자리(입력 길이 10), 이메일, 휴대폰 11자리('-' 없이)다(2026-10-29 직접 확인)."""
+    import re
+    s = clean_id(user_id)
+    if "@" in s:
         return "email"
-    digits = user_id.replace("-", "")
-    if digits.startswith("01") and len(digits) in (10, 11):
+    if re.fullmatch(r"\+?82-?0?1[016789][-.]?\d{3,4}[-.]?\d{4}", s):   # +82 10-1234-5678
+        return "phone"
+    if re.fullmatch(r"01[016789]-\d{3,4}-\d{4}", s):                    # 하이픈이 있으면 휴대폰이다
+        return "phone"
+    digits = re.sub(r"[-.]", "", s)
+    if re.fullmatch(r"01[016789]\d{8}", digits):                        # 11자리, 하이픈 없는 휴대폰
         return "phone"
     return "memberNo"
+
+
+def login_id_value(user_id):
+    """판별한 종류의 입력칸에 넣을 값. 휴대폰은 '-' 와 국가번호를 뺀 숫자 11자리."""
+    import re
+    s = clean_id(user_id)
+    tab = login_tab(s)
+    if tab == "phone":
+        digits = re.sub(r"\D", "", s)
+        if digits.startswith("82"):
+            digits = "0" + digits[2:].lstrip("0")
+        return digits
+    return s.replace("-", "") if tab == "memberNo" else s
+
+
+def login_id_problem(user_id):
+    """웹 칸에 넣기 전에 형식이 안 맞는 것을 가린다. 맞으면 None. 안 맞으면 값 없이 종류·길이만 말한다."""
+    tab = login_tab(user_id)
+    v = login_id_value(user_id)
+    if tab == "memberNo" and not (v.isdigit() and len(v) == 10):
+        return "%s: 회원번호는 숫자 10자리여야 하는데 저장된 값은 %d자입니다" % (LOGIN_FORMAT_MSG, len(v))
+    if tab == "phone" and len(v) != 11:
+        return "%s: 휴대폰 번호는 11자리여야 하는데 저장된 값은 %d자입니다" % (LOGIN_FORMAT_MSG, len(v))
+    return None
+
+
+def classify_login_failure(text):
+    """로그인 화면에 남은 안내 문구를 가린다. 돌려주는 값: (종류, 알릴 문구). 종류는 'format'(아이디 형식)·'account'(계정·비밀번호, 다시 두드리지 않음)·'other'."""
+    t = " ".join((text or "").split())
+    if "정확하게 입력" in t:
+        return "format", LOGIN_FORMAT_MSG + ": " + t[:150]
+    if any(k in t for k in ("비밀번호", "일치하지", "등록되지", "가입되지", "인증되지", "제한", "잠", "탈퇴", "휴면", "로그인 정보")):
+        return "account", t[:200]
+    return "other", t[:200]
 
 
 def build_login_actions(user_id, password):
     tab = login_tab(user_id)
     return [
         {"click": "button#%s" % tab}, {"wait": 500},
-        {"type": "input#id", "text": user_id.replace("-", "") if tab == "phone" else user_id},
+        {"type": "input#id", "text": login_id_value(user_id)},
         {"type": "input#password", "text": password}, {"wait": 500},
         {"click": ".btn_bn-depblue"}, {"wait": 3500},
     ]
@@ -430,6 +481,9 @@ def login(chat_id, rail_type="KTX", creds=None):
 def login_with(user_id, password):
     if not (user_id and password):
         return False, "계정이 연결되어 있지 않습니다(아이디 없음)"
+    bad = login_id_problem(user_id)
+    if bad:
+        return False, bad   # 웹에 보내지 않는다(형식 거부도 실패 횟수에 들어갈 수 있다)
     want = _id_hash(user_id)
     with _lock:
         try:
@@ -445,10 +499,11 @@ def login_with(user_id, password):
             except OSError:
                 pass
             return True, None
-        why = st.get("modal") or ""
-        if not why:
-            why = "로그인 화면에서 벗어나지 못했습니다(사유 미상)"
-        return False, why[:200]
+        text = st.get("modal") or st.get("body") or ""
+        kind, why = classify_login_failure(text)
+        if not text.strip():
+            why = "로그인 화면에서 벗어나지 못했고 화면에 안내 문구가 없습니다"
+        return False, why
 
 
 def _train_selector(train, special):

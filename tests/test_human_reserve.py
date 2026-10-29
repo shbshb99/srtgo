@@ -32,6 +32,69 @@ def test_login_actions_use_real_input_and_keep_password_only_in_text():
     assert any(a.get("click") == ".btn_bn-depblue" for a in acts)
 
 
+@pytest.mark.parametrize("raw,tab,value", [
+    ("1234567890", "memberNo", "1234567890"),
+    (" 1234567890\n", "memberNo", "1234567890"),
+    ("fake.probe@example.com", "email", "fake.probe@example.com"),
+    ("01012345678", "phone", "01012345678"),
+    ("010-1234-5678", "phone", "01012345678"),
+    ("010 1234 5678", "phone", "01012345678"),
+    ("+82 10-1234-5678", "phone", "01012345678"),
+    ("010-123-4567", "phone", "0101234567"),
+    ("１２３４５６７８９０", "memberNo", "1234567890"),
+])
+def test_login_tab_and_value_per_format(raw, tab, value):
+    assert hc.login_tab(raw) == tab
+    assert hc.login_id_value(raw) == value
+
+
+def test_login_actions_pick_matching_tab_and_input_value():
+    for raw, tab, typed in (("1234567890", "memberNo", "1234567890"), ("a@b.kr", "email", "a@b.kr"),
+                            ("010-1234-5678", "phone", "01012345678")):
+        acts = hc.build_login_actions(raw, "pw-1")
+        assert acts[0] == {"click": "button#%s" % tab}
+        assert [a["text"] for a in acts if "text" in a] == [typed, "pw-1"]
+
+
+def test_login_id_problem_never_leaks_value():
+    assert hc.login_id_problem("1234567890") is None and hc.login_id_problem("a@b.kr") is None
+    assert hc.login_id_problem("01012345678") is None
+    why = hc.login_id_problem("12345")
+    assert "아이디 종류" in why and "5자" in why and "12345" not in why
+    assert any(h in why for h in botmod.CREDENTIAL_HINTS)
+
+
+def test_login_with_rejects_bad_shape_without_touching_web(monkeypatch):
+    monkeypatch.setattr(hc, "_state", lambda *a, **k: pytest.fail("웹을 부르면 안 된다"))
+    ok, why = hc.login_with("12345", "pw")
+    assert not ok and "아이디 종류" in why
+
+
+def test_classify_login_failure():
+    assert hc.classify_login_failure("안내 메시지 회원번호를 정확하게 입력하여 주십시오. 확인")[0] == "format"
+    assert "아이디 종류" in hc.classify_login_failure("회원번호를 정확하게 입력하여 주십시오")[1]
+    assert hc.classify_login_failure("로그인 정보를 다시 확인해 주세요. 비밀번호 5회 연속 오류시 로그인이 제한됩니다")[0] == "account"
+    assert hc.classify_login_failure("인증되지 않은 휴대전화번호입니다")[0] == "account"
+    kind, why = hc.classify_login_failure("전혀 모르는 안내 " * 40)
+    assert kind == "other" and len(why) == 200
+
+
+def test_login_failure_text_is_passed_on_instead_of_unknown(monkeypatch, tmp_path):
+    monkeypatch.setattr(hc, "LOGIN_ID_MARK", tmp_path / "mark")
+    monkeypatch.setattr(hc, "is_logged_in", lambda: False)
+    monkeypatch.setattr(hc, "_state", lambda *a, **k: {
+        "url": "https://www.korail.com/ticket/login", "loggedOut": True, "modal": "", "body": "점검 중입니다 " * 40})
+    ok, why = hc.login_with("1234567890", "pw")
+    assert not ok and "사유 미상" not in why and why.startswith("점검 중입니다")
+
+
+def test_standby_text_hidden_for_web_reserve(monkeypatch):
+    monkeypatch.setenv("SRTGO_HUMAN_FETCH", "1")
+    assert botmod.web_reserve_mode(botmod.BOOKING_RAIL)
+    monkeypatch.setenv("SRTGO_HUMAN_FETCH", "0")
+    assert not botmod.web_reserve_mode(botmod.BOOKING_RAIL)
+
+
 def test_reserve_actions_stop_before_payment():
     acts = hc.build_reserve_actions(make_train(), False, "20261030", 9, today=datetime(2026, 10, 29))
     flat = json.dumps(acts, ensure_ascii=False)

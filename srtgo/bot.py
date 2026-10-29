@@ -539,7 +539,8 @@ class RailLoginError(Exception):
 
 
 # 코레일은 로그인 실패를 예외 대신 응답 메시지로 준다. 계정 문제로 보이는 문구들.
-CREDENTIAL_HINTS = ("비밀번호", "회원", "존재하지", "일치하지", "잠금", "잠겼", "탈퇴", "휴면", "아이디")
+CREDENTIAL_HINTS = ("비밀번호", "회원", "존재하지", "일치하지", "잠금", "잠겼", "탈퇴", "휴면", "아이디",
+                    "등록되지", "가입되지", "인증되지", "제한", "로그인 정보")
 
 
 def open_rail(rail_type, user_id, password):
@@ -922,8 +923,10 @@ class Watch:
 
     def options_line(self):
         parts = [SEAT_LABEL[self.seat_option]]
-        if self.standby:
+        if self.standby and not web_reserve_mode(self.rail_type):
             parts.append("매진이면 예약대기")
+        elif web_reserve_mode(self.rail_type):
+            parts.append("웹 예약은 예약대기 미지원")
         if self.pay:
             parts.append("자동 결제")
         return " · ".join(parts)
@@ -2239,7 +2242,9 @@ class Bot(OpsMixin):
             f"🎯 {', '.join(titles)}",
             "",
             "좌석 유형과 옵션을 고르고 '대기 시작'을 누르세요.",
-            "예약대기: 매진 열차에 대기를 걸어 두면 자리가 났을 때 철도사가 배정하고 문자로 알려 줍니다.",
+            "웹 예약은 예약대기를 지원하지 않습니다. 자리가 나면 예약만 잡고 결제는 직접 하셔야 합니다."
+            if web_reserve_mode(d.rail_type)
+            else "예약대기: 매진 열차에 대기를 걸어 두면 자리가 났을 때 철도사가 배정하고 문자로 알려 줍니다.",
         ]
         rows = chunk(
             [
@@ -2248,7 +2253,8 @@ class Bot(OpsMixin):
             ],
             2,
         )
-        rows.append([(f"{'✅' if d.standby else '⬜'} 매진이면 예약대기 신청", "standby")])
+        if not web_reserve_mode(d.rail_type):
+            rows.append([(f"{'✅' if d.standby else '⬜'} 매진이면 예약대기 신청", "standby")])
         # 카드는 오너 것만 PC에 있다. 남의 예매가 오너 카드로 결제되면 안 된다.
         if u.is_owner and card_ready():
             rows.append([(f"{'✅' if d.pay else '⬜'} 예매되면 바로 카드 결제", "autopay")])
@@ -2471,7 +2477,7 @@ class Bot(OpsMixin):
             return False
         if not _is_seat_available(train, w.seat_type(), w.rail_type):
             return False
-        if w.standby:
+        if w.standby and not web_reserve_mode(w.rail_type):
             return True
         return any(seat_flags(train, w.rail_type))
 
