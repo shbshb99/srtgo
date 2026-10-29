@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2+ktx.19",
-  "wheel": "srtgo-2.2.2+ktx.19-py3-none-any.whl",
-  "sha256": "82ae603290ae1b5e8d2e32af2b16771d1f8da0b6bb3fa8e73404f4fcc7f17631",
-  "notes": "신청 마감이 지난 열차를 등록하면 지난 날짜를 신청하라고 안내하던 문제를 고쳤습니다. 이제 마감이 지났다고 알리고 취소표를 직접 확인하도록 안내합니다."
+  "version": "2.2.2+ktx.20",
+  "wheel": "srtgo-2.2.2+ktx.20-py3-none-any.whl",
+  "sha256": "7d562284e9c08eff4f548932587a0f51f110700efdfa37bf2d0625df01112fb3",
+  "notes": "조회 간격이 사람이 새로고침하는 속도(보통 4~16초, 가끔 휴식, 시간당 상한)로 바뀌었습니다. 값은 ~/.srtgo/pacing.json 으로 직접 고칠 수 있습니다."
 }
