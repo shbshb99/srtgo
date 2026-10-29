@@ -69,7 +69,7 @@ def fake_state(monkeypatch, tmp_path):
     calls = []
 
     def run(page):
-        def _state(actions=None, url=None, query=None):
+        def _state(actions=None, url=None, query=None, smart=None):
             calls.append((url, actions))
             return page
         monkeypatch.setattr(hc, "_state", _state)
@@ -107,7 +107,7 @@ def test_login_with_reuses_session_and_reports_reason(monkeypatch, tmp_path):
     seq = []
     monkeypatch.setattr(hc, "is_logged_in", lambda: True)
 
-    def _state(actions=None, url=None, query=None):
+    def _state(actions=None, url=None, query=None, smart=None):
         seq.append(actions)
         return {"url": "https://www.korail.com/ticket/login", "loggedOut": True,
                 "modal": "안내 메세지 등록되지 않는 회원번호입니다. 확인"}

@@ -10,11 +10,11 @@ from collections import deque
 from pathlib import Path
 from random import lognormvariate, random, uniform
 
-MEDIAN_SECONDS = 8.0       # 보통 간격의 중앙값
-SIGMA = 0.5                # 로그정규 퍼짐: 대부분 4~16초
+MEDIAN_SECONDS = 4.0       # 보통 간격의 중앙값(현범 2026-10-29 새 값)
+SIGMA = 0.4                # 로그정규 퍼짐: 대부분 2.7~6초
 MIN_SECONDS = 3.0
-REST_CHANCE = 0.06         # 가끔 화면을 떠난 것처럼 쉰다
-REST_RANGE = (30.0, 90.0)
+REST_CHANCE = 0.01         # 가끔 화면을 떠난 것처럼 쉰다
+REST_RANGE = (10.0, 20.0)
 HOURLY_CAP = 300           # 철도사별 시간당 조회 상한
 CAP_WAIT_RANGE = (120.0, 300.0)
 

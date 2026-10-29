@@ -7,17 +7,19 @@
 로그인(login)과 예약(reserve)도 같은 길로 웹 화면에 사람처럼 입력하고, 예약은 결제 전 단계에서 멈춘다. 결제는 사람이 한다.
 """
 import json
+import logging
 import os
-import subprocess
-import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 
 from .pacing import HumanPacer
+
+log = logging.getLogger("srtgo.human")
 
 LIST_URL = "https://www.korail.com/ticket/search/general"
 PROFILE = "korail"
@@ -52,94 +54,164 @@ def build_actions(dep, arr, date, hour, today=None):
     months_ahead = (y - today.year) * 12 + (m - today.month)
     if months_ahead < 0:
         raise HumanFetchError("지난 날짜는 조회할 수 없습니다: " + date)
+    r = [200, 600]   # 중간 클릭 뒤 쉼(밀리초). 마지막 조회 클릭만 기본(500~1300)으로 길게 둔다
     steps = [
-        {"click": "input[name=txtGoStart]"}, {"wait": 400},
-        {"click": 'a:text-is("%s") >> visible=true' % dep}, {"wait": 400},
-        {"click": "input[name=txtGoEnd]"}, {"wait": 400},
-        {"click": 'a:text-is("%s") >> visible=true' % arr}, {"wait": 400},
-        {"click": "input[name=startDate]"}, {"wait": 400},
+        {"click": "input[name=txtGoStart]", "rest": r},
+        {"click": 'a:text-is("%s") >> visible=true' % dep, "rest": r},
+        {"click": "input[name=txtGoEnd]", "rest": r},
+        {"click": 'a:text-is("%s") >> visible=true' % arr, "rest": r},
+        {"click": "input[name=startDate]", "rest": r},
     ]
     for _ in range(months_ahead):
-        steps += [{"click": ".slick-next >> visible=true >> nth=0"}, {"wait": 400}]
+        steps += [{"click": ".slick-next >> visible=true >> nth=0", "rest": r}]
     steps += [
-        {"click": 'td:not(.disabled) a:has(span.day:text-is("%d")) >> visible=true' % d}, {"wait": 300},
+        {"click": 'td:not(.disabled) a:has(span.day:text-is("%d")) >> visible=true' % d, "rest": r},
     ]
     # 시각 줄은 5시간씩 움직이고, 처음 위치는 열 때의 시각(지금 시각 근처)이라 먼저 맨 앞(0~4시)으로 보낸다
     # (2026-10-29 확인: 15~19시에서 이전 3번이면 0~4시, 다음 1번이면 5~9시, 끝은 19~23시에서 멈춤)
+    # 통로가 새 판(smart)이면 이 목록 대신 화면을 읽어 필요한 칸·칸수만 누른다. 이 목록은 옛 통로와 다시 하기용이다.
     for _ in range(4):
-        steps += [{"click": ".slide_list .slick-prev >> visible=true"}, {"wait": 400}]
+        steps += [{"click": ".slide_list .slick-prev >> visible=true", "rest": r}]
     for _ in range(hour // 5):
-        steps += [{"click": ".slide_list .slick-next >> visible=true"}, {"wait": 400}]
+        steps += [{"click": ".slide_list .slick-next >> visible=true", "rest": r}]
     steps += [
-        {"click": '.slide_list .slick-active a:text-is("%02d시")' % hour}, {"wait": 300},
-        {"click": 'text="적용" >> visible=true'}, {"wait": 400},
+        {"click": '.slide_list .slick-active a:text-is("%02d시")' % hour, "rest": r},
+        {"click": 'text="적용" >> visible=true', "rest": r},
         {"click": ".btn_lookup"}, {"wait_for": "li.tckList", "timeout": 20000},
     ]
     return steps
 
 
 LOCAL_API = "http://127.0.0.1:8765"
-SCRAPE_PY = os.environ.get("SCRAPE_PY", r"C:\apps\scrapling_venv\Scripts\python.exe")
-SCRAPE_API_PY = os.path.join(os.path.dirname(HUMAN_FETCH_PS1), "scrape_api.py")
 RESUME_ACTIONS = [{"press": "F5"}, {"wait_for": "li.tckList", "timeout": 20000}]
-last_marks = []   # 마지막 조회의 단계별 걸린 시간(초), 측정용
+WANT_SERVER_VERSION = 3   # srtgo/scrape_server.py 의 SERVER_VERSION 과 같게 올린다
+NO_SERVER_MSG = ("화면 세션의 통로(예약작업 ShbScrapeApi)가 꺼져 있습니다. 운영PC 에 로그온한 상태에서 "
+                 "prod2_scrape_server_pkg.ps1 을 한 번 실행해 예약작업을 만드세요(봇이 통로를 직접 띄우지 않습니다)")
+ERROR_TEXT_LIMIT = 600   # 통로·HTTP 오류 본문을 이만큼 남긴다(예전 200자는 원인이 잘렸다)
+last_marks = []   # 마지막 조회의 단계별 누적 시간(초), 측정용
+last_info = {}    # 마지막 조회의 통로 응답 요약(mode, retry, timing)
 
 
 def _health(api):
+    """통로가 살아 있으면 /health 응답(dict), 아니면 None."""
     try:
         with urllib.request.urlopen(api + "/health", timeout=2) as r:
-            return r.status == 200
+            if r.status != 200:
+                return None
+            try:
+                return json.load(r)
+            except ValueError:
+                return {}
     except Exception:
-        return False
+        return None
+
+
+def _session_id():
+    """이 프로세스의 윈도우 세션 번호. 0 은 보이지 않는 서비스 세션이다. 알 수 없으면 None."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        sid = ctypes.c_ulong()
+        if ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(sid)):
+            return sid.value
+    except Exception:
+        pass
+    return None
+
+
+def _auth_headers():
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get("SCRAPE_API_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    return headers
 
 
 def _ensure_local_server():
-    """이 PC 의 스크래플링 통로(상시 브라우저를 들고 있는 프로세스)가 없으면 띄운다."""
-    if _health(LOCAL_API):
-        return
-    if not (os.path.exists(SCRAPE_PY) and os.path.exists(SCRAPE_API_PY)):
-        raise HumanFetchError("화면이 있는 계정에서 실행해야 합니다: 이 PC 에 스크래플링 통로가 없습니다")
-    if os.environ.get("SESSIONNAME", "Console") == "" or os.environ.get("USERNAME", "").endswith("$"):
-        raise HumanFetchError("화면이 있는 계정에서 실행해야 합니다")
-    flags = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen([SCRAPE_PY, "-I", SCRAPE_API_PY, "serve"], creationflags=flags,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(30):
-        if _health(LOCAL_API):
-            return
-        _sleep(1)
-    raise HumanFetchError("스크래플링 통로가 30초 안에 켜지지 않았습니다(화면이 있는 계정에서 실행해야 합니다)")
+    """이 PC 의 화면 세션 통로가 켜져 있는지만 본다. 봇은 통로나 크롬을 직접 띄우지 않는다.
+    (세션 0 에서 띄운 통로가 8765 와 크롬 프로필을 잡아 502 로 죽은 일이 있었다, 2026-10-29)
+    통로가 옛 판이면 /quit 로 끈다. 예약작업이 10초 안에 새 판으로 다시 켠다."""
+    h = _health(LOCAL_API)
+    if h is None:
+        if _session_id() == 0:
+            raise HumanFetchError(NO_SERVER_MSG)
+        for _ in range(12):   # 예약작업이 죽은 통로를 10초 간격으로 다시 켠다
+            _sleep(1)
+            h = _health(LOCAL_API)
+            if h is not None:
+                break
+        else:
+            raise HumanFetchError(NO_SERVER_MSG)
+    if int(h.get("v", 0)) < WANT_SERVER_VERSION:
+        try:
+            urllib.request.urlopen(urllib.request.Request(LOCAL_API + "/quit", b"{}", _auth_headers(), method="POST"), timeout=3)
+        except Exception:
+            return   # 옛 통로가 /quit 을 모르면 그대로 쓴다
+        for _ in range(40):
+            _sleep(1)
+            h2 = _health(LOCAL_API)
+            if h2 is not None and int(h2.get("v", 0)) >= WANT_SERVER_VERSION:
+                return
+        raise HumanFetchError("옛 통로를 끈 뒤 새 통로가 40초 안에 켜지지 않았습니다. " + NO_SERVER_MSG)
 
 
-def _post(api, actions, query):
+def _error_text(ex):
+    """오류를 앞 ERROR_TEXT_LIMIT 자까지 풀어 쓴다. HTTP 오류는 통로가 준 본문(detail)을 읽는다."""
+    if isinstance(ex, urllib.error.HTTPError):
+        try:
+            raw = ex.read().decode("utf-8", "replace")
+            try:
+                d = json.loads(raw)
+                raw = "%s: %s" % (d.get("error", ""), d.get("detail", raw))
+            except ValueError:
+                pass
+        except Exception:
+            raw = str(ex)
+        return ("통로 오류 %s %s" % (ex.code, raw))[:ERROR_TEXT_LIMIT]
+    return ("%s: %s" % (type(ex).__name__, str(ex)))[:ERROR_TEXT_LIMIT]
+
+
+def _send(api, body, error_cls, **kw):
+    req = urllib.request.Request(api + "/fetch", json.dumps(body).encode(), _auth_headers())
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            res = json.load(r)
+    except Exception as ex:
+        text = _error_text(ex)
+        log.warning("통로 호출 실패: %s", text)
+        raise error_cls(text, **kw) from ex
+    if not res.get("js"):
+        text = "통로가 결과를 주지 않았습니다: " + str(res)[:ERROR_TEXT_LIMIT]
+        log.warning(text)
+        raise error_cls(text, **kw)
+    last_marks[:] = res.get("marks") or []
+    last_info.clear()
+    last_info.update({k: res.get(k) for k in ("mode", "retry", "timing", "v")})
+    if res.get("retry"):
+        log.warning("통로가 한 번 다시 했습니다: %s", res["retry"])
+    return res["js"]
+
+
+def _post(api, actions, query, smart=None):
     body = {
         "url": LIST_URL, "mode": "stealth", "real_chrome": True, "solve_cloudflare": True,
         "profile": PROFILE, "timeout": 120, "actions": actions, "js": READ_JS,
         "hold": {"query": query, "resume_actions": RESUME_ACTIONS},
     }
-    headers = {"Content-Type": "application/json"}
-    token = os.environ.get("SCRAPE_API_TOKEN")
-    if token:
-        headers["Authorization"] = "Bearer " + token
-    req = urllib.request.Request(api + "/fetch", json.dumps(body).encode(), headers)
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            res = json.load(r)
-    except Exception as ex:
-        raise HumanFetchError("%s: %s" % (type(ex).__name__, str(ex)[:200])) from ex
-    if not res.get("js"):
-        raise HumanFetchError("통로가 결과를 주지 않았습니다: " + str(res)[:200])
-    last_marks[:] = res.get("marks") or []
-    return res["js"]
+    if smart:
+        body["smart"] = smart   # 새 통로는 화면 값을 읽어 다른 칸만 고친다. 옛 통로는 모르는 칸이라 무시하고 actions 를 따른다
+    return _send(api, body, HumanFetchError)
 
 
-def _run_local(actions, query):
+def _run_local(actions, query, smart=None):
     _ensure_local_server()
-    return _post(LOCAL_API, actions, query)
+    return _post(LOCAL_API, actions, query, smart)
 
 
-def _run_remote(actions, query):
-    return _post(REMOTE_API, actions, query)
+def _run_remote(actions, query, smart=None):
+    return _post(REMOTE_API, actions, query, smart)
+
 
 def fetch_list(dep, arr, date, hour):
     """열차 목록 화면을 읽어 {'when': 화면에 뜬 일시, 'rows': [줄 HTML...]} 로 돌려준다. 결과 HTML 은 OUT_DIR 에 남긴다."""
@@ -154,7 +226,8 @@ def fetch_list(dep, arr, date, hour):
         actions = build_actions(dep, arr, date, hour)
         try:
             use_local = os.name == "nt" and os.path.exists(HUMAN_FETCH_PS1)
-            raw = (_run_local if use_local else _run_remote)(actions, "%s|%s|%s|%d" % (dep, arr, date, hour))
+            smart = {"kind": "korail_list", "dep": dep, "arr": arr, "date": date, "hour": hour}
+            raw = (_run_local if use_local else _run_remote)(actions, "%s|%s|%s|%d" % (dep, arr, date, hour), smart=smart)
         finally:
             _last[0] = _clock()
     try:
@@ -291,36 +364,30 @@ def _id_hash(user_id):
     return hashlib.sha256(("srtgo-korail:" + user_id).encode()).hexdigest()[:16]
 
 
-def _state(actions=None, url=LOGIN_URL, query=None):
-    raw = _post_state(url, actions or [{"wait": 300}], query or "state|%f" % _clock())
+def _state(actions=None, url=LOGIN_URL, query=None, smart=None):
+    raw = _post_state(url, actions or [{"wait": 300}], query or "state|%f" % _clock(), smart=smart)
     try:
         return json.loads(raw)
     except ValueError as ex:
         raise HumanReserveError("읽은 결과가 JSON 이 아닙니다", definite=False) from ex
 
 
-def _post_state(url, actions, query, js=STATE_JS):
+def _post_state(url, actions, query, js=STATE_JS, smart=None):
     # 상시 브라우저가 이 PC 에 있으면 이 PC 로, 없으면 레노버 통로로 보낸다(조회와 같다).
     # 레노버로는 사설망(Tailscale)만 지나고, 아이디·비밀번호는 측정 기록에 남지 않게 가려진다.
+    # retry 거짓: 통로가 오류 뒤 처음부터 다시 하지 않는다(예매 버튼을 두 번 누르는 일을 막는다)
     use_local = os.name == "nt" and os.path.exists(HUMAN_FETCH_PS1)
     api = LOCAL_API if use_local else REMOTE_API
     if use_local:
-        _ensure_local_server()
+        try:
+            _ensure_local_server()
+        except HumanFetchError as ex:
+            raise HumanReserveError(str(ex), definite=True) from ex   # 통로가 없으면 아무것도 누르지 않았다
     body = {"url": url, "mode": "stealth", "real_chrome": True, "solve_cloudflare": True, "profile": PROFILE,
-            "timeout": 120, "actions": actions, "js": js, "hold": {"query": query, "resume_actions": None}}
-    headers = {"Content-Type": "application/json"}
-    token = os.environ.get("SCRAPE_API_TOKEN")
-    if token:
-        headers["Authorization"] = "Bearer " + token
-    req = urllib.request.Request(api + "/fetch", json.dumps(body).encode(), headers)
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            res = json.load(r)
-    except Exception as ex:
-        raise HumanReserveError("%s: %s" % (type(ex).__name__, str(ex)[:200]), definite=False) from ex
-    if not res.get("js"):
-        raise HumanReserveError("통로가 결과를 주지 않았습니다: " + str(res)[:200], definite=False)
-    return res["js"]
+            "timeout": 120, "actions": actions, "js": js, "hold": {"query": query, "resume_actions": None, "retry": False}}
+    if smart:
+        body["smart"] = smart
+    return _send(api, body, HumanReserveError, definite=False)
 
 
 def login_tab(user_id):
@@ -439,7 +506,9 @@ def reserve(train, special=False, chat_id=None, rail_type="KTX", creds=None):
                 raise HumanReserveError("로그인 필요: " + str(why), definite=True)
         date, hour = train.dep_date, int(train.dep_time[:2])
         actions = build_reserve_actions(train, special, date, hour)
-        st = _state(actions, url=LIST_URL, query="reserve|%s|%f" % (train.train_no, _clock()))
+        smart = {"kind": "korail_list", "dep": train.dep_name, "arr": train.arr_name, "date": date, "hour": hour,
+                 "after": build_reserve_actions(train, special, date, hour)[len(build_actions(train.dep_name, train.arr_name, date, hour)):]}
+        st = _state(actions, url=LIST_URL, query="reserve|%s|%f" % (train.train_no, _clock()), smart=smart)
         kind, text = classify_reserve_page(st)
         try:
             OUT_DIR.mkdir(parents=True, exist_ok=True)

@@ -71,7 +71,7 @@ def test_pacing_waits_between_calls(monkeypatch, tmp_path):
     monkeypatch.setattr(hc, "_last", [None])
     monkeypatch.setattr(hc._pacer, "next_delay", lambda: 8.0)
     monkeypatch.setattr(hc, "HUMAN_FETCH_PS1", str(tmp_path / "없는파일.ps1"))   # 이 PC 에 직접 길이 없으면 통로(HTTP)로 간다
-    monkeypatch.setattr(hc, "_run_remote", lambda actions, stamp: json.dumps({"rows": []}))
+    monkeypatch.setattr(hc, "_run_remote", lambda actions, stamp, smart=None: json.dumps({"rows": []}))
     monkeypatch.setattr(hc, "OUT_DIR", tmp_path)
     hc.fetch_list("서울", "부산", "20261030", 8)
     assert slept == []                               # 첫 조회는 기다리지 않는다

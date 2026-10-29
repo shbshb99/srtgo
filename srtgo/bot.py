@@ -269,7 +269,9 @@ def describe_error(ex) -> str:
     text = str(ex).strip() or type(ex).__name__
     if not isinstance(ex, (KorailError, SRTError, RailLoginError)):
         text = f"{type(ex).__name__}: {text}"
-    return text[:300]
+    # 사람처럼 조회·예약 통로의 오류는 원인이 길어서(502 본문 등) 300자로 자르면 안 보인다
+    limit = 700 if isinstance(ex, (human_client.HumanFetchError, human_client.HumanReserveError)) else 300
+    return text[:limit]
 
 
 # --- 역 -------------------------------------------------------------------
