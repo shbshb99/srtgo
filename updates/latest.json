@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2+ktx.21",
-  "wheel": "srtgo-2.2.2+ktx.21-py3-none-any.whl",
-  "sha256": "f9ff8df533250364dd7153cc7798408e4ee55261bd0c193053f054c7f4310606",
-  "notes": "열차 조회를 코레일 웹 화면에서 사람처럼 입력해 읽는 방식으로 바꿈(로그인 없이 조회). 예매는 그대로"
+  "version": "2.2.2+ktx.22",
+  "wheel": "srtgo-2.2.2+ktx.22-py3-none-any.whl",
+  "sha256": "5b9e1ab02ebf3b0c5af6f21d75b282abcbaa29442158ba7fd7a83c0dbec877c2",
+  "notes": "열차 검색을 상시 브라우저로 바꿈: 같은 조건 재조회 약 2초, 새 조건 첫 조회 약 47초(전 약 60초). 사람처럼 입력은 그대로"
 }

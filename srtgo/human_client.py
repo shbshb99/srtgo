@@ -52,16 +52,16 @@ def build_actions(dep, arr, date, hour, today=None):
     if months_ahead < 0:
         raise HumanFetchError("지난 날짜는 조회할 수 없습니다: " + date)
     steps = [
-        {"click": "input[name=txtGoStart]"}, {"wait": 1200},
-        {"click": 'a:text-is("%s") >> visible=true' % dep}, {"wait": 1200},
-        {"click": "input[name=txtGoEnd]"}, {"wait": 1200},
-        {"click": 'a:text-is("%s") >> visible=true' % arr}, {"wait": 1200},
-        {"click": "input[name=startDate]"}, {"wait": 1200},
+        {"click": "input[name=txtGoStart]"}, {"wait": 400},
+        {"click": 'a:text-is("%s") >> visible=true' % dep}, {"wait": 400},
+        {"click": "input[name=txtGoEnd]"}, {"wait": 400},
+        {"click": 'a:text-is("%s") >> visible=true' % arr}, {"wait": 400},
+        {"click": "input[name=startDate]"}, {"wait": 400},
     ]
     for _ in range(months_ahead):
-        steps += [{"click": ".slick-next >> visible=true >> nth=0"}, {"wait": 600}]
+        steps += [{"click": ".slick-next >> visible=true >> nth=0"}, {"wait": 400}]
     steps += [
-        {"click": 'td:not(.disabled) a:has(span.day:text-is("%d")) >> visible=true' % d}, {"wait": 800},
+        {"click": 'td:not(.disabled) a:has(span.day:text-is("%d")) >> visible=true' % d}, {"wait": 300},
     ]
     # 시각 줄은 5시간씩 움직이고, 처음 위치는 열 때의 시각(지금 시각 근처)이라 먼저 맨 앞(0~4시)으로 보낸다
     # (2026-10-29 확인: 15~19시에서 이전 3번이면 0~4시, 다음 1번이면 5~9시, 끝은 19~23시에서 멈춤)
@@ -70,49 +70,57 @@ def build_actions(dep, arr, date, hour, today=None):
     for _ in range(hour // 5):
         steps += [{"click": ".slide_list .slick-next >> visible=true"}, {"wait": 400}]
     steps += [
-        {"click": '.slide_list .slick-active a:text-is("%02d시")' % hour}, {"wait": 800},
-        {"click": 'text="적용" >> visible=true'}, {"wait": 1200},
-        {"click": ".btn_lookup"}, {"wait": 5000},
+        {"click": '.slide_list .slick-active a:text-is("%02d시")' % hour}, {"wait": 300},
+        {"click": 'text="적용" >> visible=true'}, {"wait": 400},
+        {"click": ".btn_lookup"}, {"wait_for": "li.tckList", "timeout": 20000},
     ]
     return steps
 
 
-def _run_local(actions, stamp):
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(prefix="humanfetch_"))
-    act, js, out = tmp / "actions.json", tmp / "read.js", OUT_DIR / ("search_%s.json" % stamp)
-    act.write_text(json.dumps(actions, ensure_ascii=False), encoding="utf-8")
-    js.write_text(READ_JS, encoding="utf-8")
-    shot = OUT_DIR / ("search_%s.png" % stamp)
-    cmd = [
-        "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", HUMAN_FETCH_PS1,
-        "-Url", LIST_URL, "-Actions", str(act), "-Js", str(js), "-Profile", PROFILE,
-        "-Shot", str(shot), "-SaveJs", str(out),
-    ]
+LOCAL_API = "http://127.0.0.1:8765"
+SCRAPE_PY = os.environ.get("SCRAPE_PY", r"C:\apps\scrapling_venv\Scripts\python.exe")
+SCRAPE_API_PY = os.path.join(os.path.dirname(HUMAN_FETCH_PS1), "scrape_api.py")
+RESUME_ACTIONS = [{"press": "F5"}, {"wait_for": "li.tckList", "timeout": 20000}]
+last_marks = []   # 마지막 조회의 단계별 걸린 시간(초), 측정용
+
+
+def _health(api):
     try:
-        subprocess.run(cmd, capture_output=True, timeout=TIMEOUT)
-    finally:
-        for f in (act, js):
-            f.unlink(missing_ok=True)
-        try:
-            tmp.rmdir()
-        except OSError:
-            pass
-    if not out.exists():
-        raise HumanFetchError("사람처럼 조회 결과가 없습니다(창이 막혔거나 조회 실패)")
-    return out.read_text(encoding="utf-8")
+        with urllib.request.urlopen(api + "/health", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
 
 
-def _run_remote(actions, stamp):
+def _ensure_local_server():
+    """이 PC 의 스크래플링 통로(상시 브라우저를 들고 있는 프로세스)가 없으면 띄운다."""
+    if _health(LOCAL_API):
+        return
+    if not (os.path.exists(SCRAPE_PY) and os.path.exists(SCRAPE_API_PY)):
+        raise HumanFetchError("화면이 있는 계정에서 실행해야 합니다: 이 PC 에 스크래플링 통로가 없습니다")
+    if os.environ.get("SESSIONNAME", "Console") == "" or os.environ.get("USERNAME", "").endswith("$"):
+        raise HumanFetchError("화면이 있는 계정에서 실행해야 합니다")
+    flags = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen([SCRAPE_PY, "-I", SCRAPE_API_PY, "serve"], creationflags=flags,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(30):
+        if _health(LOCAL_API):
+            return
+        _sleep(1)
+    raise HumanFetchError("스크래플링 통로가 30초 안에 켜지지 않았습니다(화면이 있는 계정에서 실행해야 합니다)")
+
+
+def _post(api, actions, query):
     body = {
         "url": LIST_URL, "mode": "stealth", "real_chrome": True, "solve_cloudflare": True,
         "profile": PROFILE, "timeout": 120, "actions": actions, "js": READ_JS,
+        "hold": {"query": query, "resume_actions": RESUME_ACTIONS},
     }
     headers = {"Content-Type": "application/json"}
     token = os.environ.get("SCRAPE_API_TOKEN")
     if token:
         headers["Authorization"] = "Bearer " + token
-    req = urllib.request.Request(REMOTE_API + "/fetch", json.dumps(body).encode(), headers)
+    req = urllib.request.Request(api + "/fetch", json.dumps(body).encode(), headers)
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             res = json.load(r)
@@ -120,8 +128,17 @@ def _run_remote(actions, stamp):
         raise HumanFetchError("%s: %s" % (type(ex).__name__, str(ex)[:200])) from ex
     if not res.get("js"):
         raise HumanFetchError("통로가 결과를 주지 않았습니다: " + str(res)[:200])
+    last_marks[:] = res.get("marks") or []
     return res["js"]
 
+
+def _run_local(actions, query):
+    _ensure_local_server()
+    return _post(LOCAL_API, actions, query)
+
+
+def _run_remote(actions, query):
+    return _post(REMOTE_API, actions, query)
 
 def fetch_list(dep, arr, date, hour):
     """열차 목록 화면을 읽어 {'when': 화면에 뜬 일시, 'rows': [줄 HTML...]} 로 돌려준다. 결과 HTML 은 OUT_DIR 에 남긴다."""
@@ -136,7 +153,7 @@ def fetch_list(dep, arr, date, hour):
         actions = build_actions(dep, arr, date, hour)
         try:
             use_local = os.name == "nt" and os.path.exists(HUMAN_FETCH_PS1)
-            raw = _run_local(actions, stamp) if use_local else _run_remote(actions, stamp)
+            raw = (_run_local if use_local else _run_remote)(actions, "%s|%s|%s|%d" % (dep, arr, date, hour))
         finally:
             _last[0] = _clock()
     try:
