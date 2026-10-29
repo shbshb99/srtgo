@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2+ktx.27",
-  "wheel": "srtgo-2.2.2+ktx.27-py3-none-any.whl",
-  "sha256": "2395eeb322a3c2276146b743981d6ae3f8e575fc41b2d8f7f48818f4e3355106",
-  "notes": "코레일 웹 로그인 성공 판정 수리(로그인된 화면을 거부로 오판하던 것), 알림에 화면 본문·이름이 나가지 않게 함"
+  "version": "2.2.2+ktx.28",
+  "wheel": "srtgo-2.2.2+ktx.28-py3-none-any.whl",
+  "sha256": "587f0eda40a75666ad74d0ade987871f393771493bc0faae45a01deafde7b6be",
+  "notes": "클릭 사이 불필요한 대기를 줄임(사람처럼 곧바로 다음 목표로)"
 }
