@@ -537,6 +537,11 @@ class NetFunnelHelper:
         )
 
 
+def _human_mode():
+    """SRTGO_HUMAN_FETCH=0 이면 예전 앱 방식(로그인·조회·예약 모두)."""
+    return os.environ.get("SRTGO_HUMAN_FETCH", "1") != "0"
+
+
 class Korail:
     """Main Korail API interface"""
 
@@ -625,6 +630,17 @@ class Korail:
             self.korail_id = korail_id
         if korail_pw:
             self.korail_pw = korail_pw
+
+        if _human_mode():
+            # 앱 로그인은 -8204 로 막힌다. 코레일 웹 로그인 화면에 사람처럼 입력한다(이미 로그인돼 있으면 입력하지 않는다).
+            from . import human_client
+
+            ok, why = human_client.login_with(self.korail_id, self.korail_pw)
+            self.logined = bool(ok)
+            self.login_error = None if ok else why
+            if ok:
+                self.name = self.name or ""
+            return bool(ok)
 
         self._check_service()
 
@@ -820,6 +836,18 @@ class Korail:
         passengers = passengers or [AdultPassenger()]
         passengers = Passenger.reduce(passengers)
         cnt = sum(p.count for p in passengers)
+
+        # 앱 주소가 -8204 로 막혀 있어, 예약은 코레일 웹을 사람처럼 눌러 결제 전 단계까지만 한다(결제는 사람).
+        if _human_mode():
+            from . import human_client
+
+            if not reserving_seat:
+                raise human_client.HumanReserveError("웹 예약은 예약대기를 지원하지 않습니다", definite=True)
+            if cnt != 1 or not isinstance(passengers[0], AdultPassenger):
+                raise human_client.HumanReserveError("웹 예약은 어른 1명만 지원합니다", definite=True)
+            return human_client.reserve(
+                train, special=is_special_seat, creds=(self.korail_id, self.korail_pw)
+            )
 
         data = {
             "Device": self._device,

@@ -487,6 +487,33 @@ def classify(ex) -> str:
     return "error"
 
 
+WEB_RESERVE_MAX_FAILS = 3
+
+
+def web_reserve_mode(rail_type) -> bool:
+    return rail_type == BOOKING_RAIL and os.environ.get("SRTGO_HUMAN_FETCH", "1") != "0"
+
+
+def pay_limit_seconds(text, now=None):
+    """결제 제한시간 글귀에서 남은 초를 구한다. 못 읽거나 '확인 못 함'이면 None(웹에 값이 없을 때는 약 10분 기준으로 본다)."""
+    now = now or kst_now()
+    if not text:
+        return None
+    m = re.search(r"(\d{4})[-./](\d{2})[-./](\d{2})\D{0,6}(\d{1,2}):(\d{2})", text)
+    if m:
+        y, mo, d, h, mi = (int(x) for x in m.groups())
+        end = datetime(y, mo, d, h, mi, tzinfo=now.tzinfo)
+        return (end - now).total_seconds()
+    m = re.search(r"(\d{1,2}):(\d{2})", text)
+    if m:
+        end = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        return (end - now).total_seconds()
+    m = re.search(r"(\d+)\s*분", text)
+    if m:
+        return int(m.group(1)) * 60
+    return None
+
+
 def clear_netfunnel(rail):
     try:
         rail.clear()  # SRT 만 있다
@@ -2547,6 +2574,17 @@ class Bot(OpsMixin):
             if problem:
                 reserve_fails += 1
                 await self._reserve_problem(u, w, reserve_fails, problem)
+                if reserve_fails >= WEB_RESERVE_MAX_FAILS and web_reserve_mode(w.rail_type):
+                    # 웹 예약이 3번 연속 거절되면 더 두드리지 않는다(계정·IP 보호)
+                    log.warning("%s: 대기 %s 웹 예약 %d회 연속 실패로 멈춤", u.chat_id, w.id, reserve_fails)
+                    await self._send_important(
+                        u.chat_id,
+                        f"⛔ 자리가 났는데 웹 예약이 {reserve_fails}번 연속 거절되어 대기를 멈췄습니다.\n"
+                        f"{w.headline()}\n사유: {problem}\n\n"
+                        "계속 두드리면 계정이나 접속이 막힐 수 있어 멈춥니다. 직접 예매하시거나 사유를 확인한 뒤 새로 시작해 주세요.",
+                        kb([[HOME]]),
+                    )
+                    return
             elif reserve_fails:
                 reserve_fails = 0
                 w.clear_error()
@@ -2589,6 +2627,20 @@ class Bot(OpsMixin):
                 )
             except asyncio.CancelledError:
                 raise
+            except human_client.HumanReserveError as ex:
+                # 웹 예약: 잡히지 않았다고 확신하면 다시 시도, 모르면 중복 예매를 막으려고 멈춘다
+                if ex.definite:
+                    return "retry", f"예약 실패: {ex}"
+                log.warning("%s: 웹 예약 결과 불명: %s", u.chat_id, ex)
+                await self._send_important(
+                    u.chat_id,
+                    f"❓ {train_title(train)} 예약을 시도했는데 결과를 확인하지 못했습니다.\n"
+                    f"{w.headline()}\n\n"
+                    "중복 예매를 막으려고 이 대기를 멈춥니다. 코레일 앱·웹에서 예매내역을 꼭 확인해 주세요.\n"
+                    f"({ex})",
+                    kb([[HOME]]),
+                )
+                return "done", None
             except Exception as ex:
                 kind = classify(ex)
                 if kind == "benign":
@@ -2659,6 +2711,9 @@ class Bot(OpsMixin):
 
     async def _report_success(self, u, w, rail, train, result):
         reservation = result
+        if isinstance(result, human_client.WebReservation):
+            await self._report_web_success(u, w, train, result)
+            return
         if isinstance(result, list):
             # 코레일은 예약은 됐는데 번호로 못 찾으면 전체 예약 목록을 돌려준다.
             known = w.known_rsv or set()
@@ -2715,6 +2770,32 @@ class Bot(OpsMixin):
             )
         log.info("%s: 예매 성공 %s — %s", u.chat_id, w.id, describe(reservation))
         await self._send_important(u.chat_id, "\n".join(lines), buttons)
+
+    async def _report_web_success(self, u, w, train, res):
+        """웹으로 잡은 예약: 결제는 봇이 하지 않는다. 열차·제한시간을 알리고, 끝나기 3분 전에 한 번 더 알린다."""
+        log.info("%s: 웹 예약 접수 %s — %s", u.chat_id, w.id, train_title(train))
+        await self._send_important(
+            u.chat_id,
+            f"🎫 예약이 잡혔습니다! {train_title(train)}\n{w.headline()}\n\n"
+            f"💳 결제는 직접 하셔야 합니다. 봇은 결제하지 않습니다.\n"
+            f"⏱ 결제 제한시간: {res.limit_text}\n"
+            f"코레일+ 앱 또는 코레일 웹(www.korail.com)에 로그인해 '마이페이지 > 예매내역'에서 결제해 주세요. "
+            "시간이 지나면 자동 취소됩니다.",
+            kb([[HOME]]),
+        )
+        secs = pay_limit_seconds(res.limit_text)
+        if secs is not None and secs > 240:
+            job = asyncio.ensure_future(self._pay_reminder(u, w, train, secs - 180))
+            self._bg.add(job)
+            job.add_done_callback(self._bg.discard)
+
+    async def _pay_reminder(self, u, w, train, delay):
+        await asyncio.sleep(delay)
+        await self._send_important(
+            u.chat_id,
+            f"⏰ 결제 제한시간이 약 3분 남았습니다. {train_title(train)}\n지금 결제하지 않으면 자동 취소됩니다.",
+            kb([[HOME]]),
+        )
 
     # --- 예약대기 챙기기 --------------------------------------------------
     async def btn_rm(self, r, arg):

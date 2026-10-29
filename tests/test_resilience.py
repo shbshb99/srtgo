@@ -406,3 +406,37 @@ def test_korail_block_at_login_also_stops(env):
 
     run(go())
     assert "막아(-8204)" in env.tg.texts(OWNER)
+
+
+def test_web_reserve_stops_after_three_rejections(env, monkeypatch):
+    monkeypatch.setenv("SRTGO_HUMAN_FETCH", "1")
+    t = ktx_train(527, "200900", "231200", general="11")
+    rail = FakeKorail([t])
+    rail.reserve_error = ktx.KorailError("예약 거절: 잔여석이 없습니다", "ERR1")
+    env.rails[(OWNER, "KTX")] = rail
+    env.bot._backoff = lambda n: 0.005
+
+    async def go():
+        u, w = start(env, OWNER, [t])
+        await until(lambda: "웹 예약이 3번 연속 거절되어 대기를 멈췄습니다" in env.tg.texts(OWNER))
+        await until(lambda: not u.watches)
+        assert len(rail.reserve_calls) == 3, "3번 뒤에도 계속 두드림"
+
+    run(go())
+
+
+def test_web_reserve_success_tells_human_to_pay(env, monkeypatch):
+    monkeypatch.setenv("SRTGO_HUMAN_FETCH", "1")
+    from srtgo import human_client as hc
+    t = ktx_train(527, "200900", "231200", general="11")
+    rail = FakeKorail([t])
+    env.rails[(OWNER, "KTX")] = rail
+    rail.reserve = lambda train, passengers=None, option=None: hc.WebReservation(train, "약 10분, 확인 못 함")
+
+    async def go():
+        u, w = start(env, OWNER, [t])
+        await until(lambda: "결제는 직접 하셔야 합니다" in env.tg.texts(OWNER))
+        txt = env.tg.texts(OWNER)
+        assert "결제 제한시간: 약 10분, 확인 못 함" in txt and "예매내역" in txt
+
+    run(go())
