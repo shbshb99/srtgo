@@ -77,7 +77,7 @@ def build_actions(dep, arr, date, hour, today=None):
     months_ahead = (y - today.year) * 12 + (m - today.month)
     if months_ahead < 0:
         raise HumanFetchError("지난 날짜는 조회할 수 없습니다: " + date)
-    r = [200, 600]   # 중간 클릭 뒤 쉼(밀리초). 마지막 조회 클릭만 기본(500~1300)으로 길게 둔다
+    r = [40, 160]   # 클릭 뒤 쉼(밀리초). 사람은 누른 뒤 곧바로 다음 목표로 간다(scrape_server.REST_MID 와 같게)
     steps = [
         {"click": "input[name=txtGoStart]", "rest": r},
         {"click": 'a:text-is("%s") >> visible=true' % dep, "rest": r},
@@ -107,7 +107,7 @@ def build_actions(dep, arr, date, hour, today=None):
 
 LOCAL_API = "http://127.0.0.1:8765"
 RESUME_ACTIONS = [{"press": "F5"}, {"wait_for": "li.tckList", "timeout": 20000}]
-WANT_SERVER_VERSION = 3   # srtgo/scrape_server.py 의 SERVER_VERSION 과 같게 올린다
+WANT_SERVER_VERSION = 4  # srtgo/scrape_server.py 의 SERVER_VERSION 과 같게 올린다
 NO_SERVER_MSG = ("화면 세션의 통로(예약작업 ShbScrapeApi)가 꺼져 있습니다. 운영PC 에 로그온한 상태에서 "
                  "prod2_scrape_server_pkg.ps1 을 한 번 실행해 예약작업을 만드세요(봇이 통로를 직접 띄우지 않습니다)")
 NO_REMOTE_MSG = "스크래핑 통로가 꺼져 있습니다(운영PC 에서 통로 설치 스크립트 실행 필요)"

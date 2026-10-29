@@ -82,12 +82,12 @@ def test_form_edit_ends_with_lookup_and_uses_input_fields():
     assert not any(a.get("mark_rows") or a.get("settle") for a in p["actions"])
 
 
-def test_mid_clicks_rest_short_and_only_final_lookup_is_long():
+def test_mid_clicks_rest_short_and_lookup_uses_default():
     p = ss.plan_korail(form(), COND)
     for a in p["actions"]:
         if "click" in a and a["click"] != ".btn_lookup":
             assert a["rest"] == ss.REST_MID
-    assert "rest" not in next(a for a in p["actions"] if a.get("click") == ".btn_lookup")
+    assert "rest" not in next(a for a in p["actions"] if a.get("click") == ".btn_lookup")   # 기본 쉼도 REST_MID 라 길지 않다
 
 
 @pytest.mark.parametrize("first,last,hour,want", [
@@ -104,7 +104,7 @@ def test_hour_window_clicks(first, last, hour, want):
 def test_client_gives_old_servers_a_full_action_list_with_short_rests():
     acts = hc.build_actions("동탄", "순천", "20261030", 9, today=__import__("datetime").datetime(2026, 10, 29))
     assert acts[-2] == {"click": ".btn_lookup"}
-    assert all(a.get("rest") == [200, 600] for a in acts[:-2] if "click" in a)
+    assert all(a.get("rest") == [40, 160] for a in acts[:-2] if "click" in a)
     assert not any("wait" in a for a in acts[:-1])    # 사이 고정 대기는 없앴다
 
 

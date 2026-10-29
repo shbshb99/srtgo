@@ -17,13 +17,17 @@ import re
 import sys
 import threading
 import time
+import traceback
 
-SERVER_VERSION = 3   # 올리면 봇이 옛 통로를 /quit 로 끄고 예약작업이 새로 켠다(human_client.WANT_SERVER_VERSION 과 같이)
+SERVER_VERSION = 4   # 올리면 봇이 옛 통로를 /quit 로 끄고 예약작업이 새로 켠다(human_client.WANT_SERVER_VERSION 과 같이)
 PROFILE_ROOT = os.environ.get("SCRAPE_PROFILE_ROOT", r"C:\shb-run\browser\scrape_profiles")
 LIST_HOST_PATH = "korail.com/ticket/search"
 LOOKUP_BTN = ".btn_lookup"
 RESUME_ACTIONS = [{"press": "F5"}, {"wait_for": "li.tckList", "timeout": 20000}]
-REST_MID = [200, 600]      # 중간 클릭 뒤 쉼(밀리초). 마지막 조회 클릭만 기본(500~1300)으로 길게 둔다
+REST_MID = [40, 160]       # 클릭 뒤 쉼(밀리초). 사람은 누른 뒤 곧바로 다음 목표로 가므로 짧게. 화면이 바뀌길 기다리는 일은 쉼이 아니라 아래 기다림 함수가 한다
+PRE_CLICK = (30, 110)      # 마우스가 목표에 닿은 뒤 누르기 전(밀리초)
+HOLD_MS = (40, 100)        # 눌렀다 떼기(밀리초)
+LOOK_REST = (200, 400)     # 시작할 때 둘러본 뒤 쉼(밀리초)
 LOG_PATH = os.path.join(os.environ.get("SRTGO_HOME") or os.path.join(os.path.expanduser("~"), ".srtgo"), "scrape_server.log")
 
 # 조회 전 화면(/ticket/search/general)에는 txtGoStart·txtGoEnd 입력칸이, 조회 뒤 목록 화면(/ticket/search/list)에는
@@ -147,8 +151,9 @@ def hour_window_clicks(first, last, total, hour):
 # --- 사람처럼 입력 ------------------------------------------------------------------------
 def human_actions(p, steps, look=True, timing=None, t0=None):
     """진짜 마우스·키보드로 입력한다(페이지 안 스크립트 입력은 isTrusted=false 로 들킨다).
-    steps 의 click 은 "rest": [최소, 최대] 밀리초로 누른 뒤 쉼을 바꿀 수 있다(기본 500~1300).
-    cal_month("YYYY-MM")·cal_hour(시)는 달력·시각 줄을 읽으며 필요한 만큼만 넘긴다."""
+    steps 의 click 은 "rest": [최소, 최대] 밀리초로 누른 뒤 쉼을 바꿀 수 있다(기본 REST_MID).
+    cal_month("YYYY-MM")·cal_hour(시)는 달력·시각 줄을 읽으며 필요한 만큼만 넘긴다.
+    클릭 사이에는 마우스 이동 시간만 걸리게 한다. 화면이 바뀌길 기다려야 할 때는 고정 쉼 대신 바뀐 것이 보일 때까지만 기다린다."""
     vw = (p.viewport_size or {}).get("width", 1280)
     vh = (p.viewport_size or {}).get("height", 800)
     pos = [random.uniform(vw * 0.3, vw * 0.7), random.uniform(vh * 0.2, vh * 0.5)]
@@ -160,25 +165,60 @@ def human_actions(p, steps, look=True, timing=None, t0=None):
         p.mouse.move(x, y, steps=random.randint(8, 18))
         pos[0], pos[1] = x, y
 
-    def target(sel, left=False):
+    def box(sel):
         el = p.locator(sel).first
         el.scroll_into_view_if_needed()
-        b = el.bounding_box()
-        x = b["x"] + (random.uniform(6, 14) if left else b["width"] * random.uniform(0.3, 0.7))
-        return x, b["y"] + b["height"] * random.uniform(0.35, 0.65)
+        return el.bounding_box()
 
     def press(sel, rest=None, left=False):
-        x, y = target(sel, left)
+        b = box(sel)
+        fx, fy = random.uniform(0.3, 0.7), random.uniform(0.35, 0.65)
+
+        def point(b):
+            return b["x"] + (random.uniform(6, 14) if left else b["width"] * fx), b["y"] + b["height"] * fy
+
+        x, y = point(b)
         move(x, y)
-        p.wait_for_timeout(random.randint(150, 450))
+        p.wait_for_timeout(random.randint(*PRE_CLICK))
+        # 누르기 직전에 칸이 움직였으면(팝업이 열리는 중) 멎을 때까지만 기다렸다가 다시 겨눈다
+        for _ in range(12):
+            b2 = box(sel)
+            if all(abs(b2[k] - b[k]) < 1.5 for k in ("x", "y", "width", "height")):
+                break
+            b = b2
+            x, y = point(b)
+            move(x, y)
+            p.wait_for_timeout(40)
         p.mouse.down()
-        p.wait_for_timeout(random.randint(50, 130))
+        p.wait_for_timeout(random.randint(*HOLD_MS))
         p.mouse.up()
         return rest
 
     def rest_after(rest):
-        lo, hi = rest or (500, 1300)
+        lo, hi = rest or REST_MID
         p.wait_for_timeout(random.randint(int(lo), int(hi)))
+
+    def visible_within(sel, timeout_ms=3000):
+        """그 칸이 화면에 보일 때까지만 기다린다. 보이면 참, 시간이 지나도 안 보이면 거짓."""
+        try:
+            p.locator(sel).first.wait_for(state="visible", timeout=timeout_ms)
+            return True
+        except Exception:
+            return False
+
+    def wait_value(js, old, timeout_ms):
+        """js 값이 비어 있지 않고 old 와 달라진 뒤 두 번 연속 같을 때(움직임이 멎음)까지만 기다려 그 값을 돌려준다(시간이 지나면 마지막 값).
+        열리거나 넘어가는 중의 값을 읽고 엉뚱한 곳을 누르지 않게 하려고 바뀐 직후가 아니라 멎은 값을 쓴다."""
+        end = time.monotonic() + timeout_ms / 1000.0
+        last = None
+        while True:
+            v = p.evaluate(js)
+            if v is not None and v != old and v == last:
+                return v
+            if time.monotonic() >= end:
+                return v
+            last = v
+            p.wait_for_timeout(40)
 
     def typed(text):
         for ch in str(text):
@@ -189,11 +229,9 @@ def human_actions(p, steps, look=True, timing=None, t0=None):
     rows_sig = [None]
     p.mouse.move(pos[0], pos[1])
     if look:
-        for _ in range(random.randint(1, 2)):
-            move(random.uniform(100, vw - 100), random.uniform(100, vh - 100))
-            p.wait_for_timeout(random.randint(200, 500))
+        move(random.uniform(100, vw - 100), random.uniform(100, vh - 100))
         p.mouse.wheel(0, random.randint(80, 240))
-        p.wait_for_timeout(random.randint(600, 1200))
+        p.wait_for_timeout(random.randint(*LOOK_REST))
 
     for s in steps:
         if timing is not None:
@@ -215,7 +253,6 @@ def human_actions(p, steps, look=True, timing=None, t0=None):
             # 진짜 F5 키는 브라우저가 아니라 페이지로만 전달돼 새로고침이 되지 않는다(2026-10-29 직접 확인: 15초 기다려도 문서가 안 바뀜).
             # 그래서 화면을 직접 다시 불러온다. 옛 문서의 줄을 읽지 않도록 옛 문서에 표시를 달고, 표시가 사라질 때(새 문서)까지 기다린다
             p.evaluate("window.__srtgoStale = 1")
-            p.wait_for_timeout(random.randint(150, 400))
             p.reload(wait_until="domcontentloaded")
             end = time.monotonic() + 15
             while time.monotonic() < end:
@@ -232,37 +269,43 @@ def human_actions(p, steps, look=True, timing=None, t0=None):
             end = time.monotonic() + int(s["settle"]) / 1000.0
             while time.monotonic() < end and p.evaluate(ROWS_SIG_JS) == rows_sig[0]:
                 p.wait_for_timeout(150)
-            p.wait_for_timeout(random.randint(200, 400))
+            p.wait_for_timeout(random.randint(100, 250))
         elif "cal_month" in s:
             want = s["cal_month"]
+            visible_within(".slick-next >> visible=true >> nth=0")   # 달력이 열릴 때까지만(닫힌 채 숨어 있던 옛 값을 읽지 않는다)
+            cur = wait_value(CAL_MONTH_JS, None, 3000)
             for _ in range(14):
-                cur = p.evaluate(CAL_MONTH_JS)
                 if cur is None:
                     raise RuntimeError("달력의 월을 읽지 못했습니다")
                 if cur == want:
                     break
                 press(".slick-next >> visible=true >> nth=0" if cur < want else ".slick-prev >> visible=true >> nth=0")
-                rest_after(REST_MID)
+                cur = wait_value(CAL_MONTH_JS, cur, 1500)   # 넘어간 달이 보일 때까지만
             else:
                 raise RuntimeError("달력을 %s 로 넘기지 못했습니다" % want)
         elif "cal_hour" in s:
             hour = int(s["cal_hour"])
-            win = p.evaluate(CAL_HOURS_JS)
-            if win is None:
-                raise RuntimeError("시각 줄을 읽지 못했습니다")
-            for d in hour_window_clicks(win[0], win[1], win[2], hour):
-                press(".slide_list .slick-%s >> visible=true" % d)
-                rest_after(REST_MID)
-            press('.slide_list .slick-active a:text-is("%02d시")' % hour)
-            rest_after(s.get("rest") or REST_MID)
+            want_sel = '.slide_list .slick-active a:text-is("%02d시")' % hour
+            visible_within(".slide_list .slick-slide >> visible=true")   # 시각 줄이 열릴 때까지만
+            for _ in range(3):
+                win = wait_value(CAL_HOURS_JS, None, 3000)
+                if win is None:
+                    raise RuntimeError("시각 줄을 읽지 못했습니다")
+                for d in hour_window_clicks(win[0], win[1], win[2], hour):
+                    press(".slide_list .slick-%s >> visible=true" % d)
+                    win = wait_value(CAL_HOURS_JS, win, 1500)   # 칸이 넘어가 활성 칸이 바뀔 때까지만
+                if visible_within(want_sel, 2500):
+                    break        # 원하는 시각이 보인다
+            press(want_sel)
+            rest_after(s.get("rest"))
         elif "press" in s:
-            p.wait_for_timeout(random.randint(150, 400))
+            p.wait_for_timeout(random.randint(*PRE_CLICK))
             p.keyboard.press(s["press"])
         elif "keys" in s:
             typed(s["keys"])
         elif "scroll" in s:
             p.mouse.wheel(0, int(s["scroll"]))
-            p.wait_for_timeout(random.randint(400, 900))
+            p.wait_for_timeout(random.randint(100, 250))
         elif "click" in s or "type" in s:
             press(s.get("click") or s["type"], left="type" in s)
             if "type" in s:
@@ -339,7 +382,10 @@ class HoldBrowser:
                     self.sess._cloudflare_solver(p)
                     self.sess._wait_for_page_stability(p, True, True)
                 mark("클라우드플레어 확인")
-                p.wait_for_timeout(1500)
+                try:   # 고정 1.5초 대신 입력칸이 나타날 때까지만 기다린다
+                    p.locator("input[name=txtGoStart], #labelstart").first.wait_for(state="attached", timeout=8000)
+                except Exception:
+                    pass
             plan = None
             if smart:
                 st = p.evaluate(STATE_JS)
@@ -387,7 +433,8 @@ class HoldBrowser:
                     return res
                 except Exception as e:
                     self._thread_call(self._close)
-                    why = "%s: %s" % (type(e).__name__, str(e)[:300].replace("\n", " "))
+                    where = [f for f in traceback.extract_tb(e.__traceback__) if f.filename.endswith("scrape_server.py")]
+                    why = "%s: %s%s" % (type(e).__name__, str(e)[:300].replace("\n", " "), " (줄 %d)" % where[-1].lineno if where else "")
                     retries.append(why)
                     log("상시 브라우저 오류(시도 %d): %s" % (attempt + 1, why))
                     if attempt == 1 or a.get("retry") is False:
