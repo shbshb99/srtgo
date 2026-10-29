@@ -59,6 +59,7 @@ from .ktx import (
     SoldOutError,
     TrainType,
 )
+from .pacing import HumanPacer
 from .srt import (
     SRT,
     Adult,
@@ -1174,6 +1175,7 @@ class Bot(OpsMixin):
         self.contexts = {}
         self.heartbeat_path = None
         self._heartbeat_task = None
+        self._pacers = {}  # rail_type -> HumanPacer (사람 같은 조회 간격)
         self._bg = set()  # 예약 처리 중인 작업 (대기를 멈춰도 끝까지 돈다)
         self._turns = {}  # chat_id -> asyncio.Lock (한 사람의 입력을 순서대로)
         self._conflict_noted_at = 0
@@ -2351,7 +2353,7 @@ class Bot(OpsMixin):
     # --- 대기 루프 -------------------------------------------------------
     def _interval(self, rail_type):
         """조회 간격. 같은 철도사 대기가 많으면 늘려서 전체 조회 속도를 묶는다."""
-        base = gammavariate(RESERVE_INTERVAL_SHAPE, RESERVE_INTERVAL_SCALE) + RESERVE_INTERVAL_MIN
+        base = self._pacers.setdefault(rail_type, HumanPacer()).next_delay()
         same = sum(
             1 for u in self.contexts.values() for w in u.watches.values() if w.rail_type == rail_type
         )
