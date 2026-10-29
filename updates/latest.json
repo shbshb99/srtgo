@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2+ktx.20",
-  "wheel": "srtgo-2.2.2+ktx.20-py3-none-any.whl",
-  "sha256": "7d562284e9c08eff4f548932587a0f51f110700efdfa37bf2d0625df01112fb3",
-  "notes": "조회 간격이 사람이 새로고침하는 속도(보통 4~16초, 가끔 휴식, 시간당 상한)로 바뀌었습니다. 값은 ~/.srtgo/pacing.json 으로 직접 고칠 수 있습니다."
+  "version": "2.2.2+ktx.21",
+  "wheel": "srtgo-2.2.2+ktx.21-py3-none-any.whl",
+  "sha256": "f9ff8df533250364dd7153cc7798408e4ee55261bd0c193053f054c7f4310606",
+  "notes": "열차 조회를 코레일 웹 화면에서 사람처럼 입력해 읽는 방식으로 바꿈(로그인 없이 조회). 예매는 그대로"
 }
