@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2+ktx.25",
-  "wheel": "srtgo-2.2.2+ktx.25-py3-none-any.whl",
-  "sha256": "d07dd69fad31aef83ddea5c271729e7e95b7db3f28c5d1b4d1fbaf565da7d348",
-  "notes": "코레일 웹 로그인 아이디 형식 판별과 실패 안내, 웹 예약에서 예약대기 문구 제거"
+  "version": "2.2.2+ktx.26",
+  "wheel": "srtgo-2.2.2+ktx.26-py3-none-any.whl",
+  "sha256": "c412f902c986671c6ddfdb04ccb90da468c6e34f86c0979d69390db060d66231",
+  "notes": "버튼 멈춤 수리: 통로 호출이 길어져도 메뉴·명령이 바로 응답, 통로 꺼짐 즉시 안내"
 }
