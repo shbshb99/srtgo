@@ -1,7 +1,5 @@
 """운영 PC 의 스크래핑 통로(ops/scrape_api.py serve)를 부르는 클라이언트. 표준 라이브러리만 쓴다.
 
-코레일에는 사람이 로그인해 둔 프로필의 보이는 크롬 창(real_chrome)으로만 간다.
-숨김 브라우저·봇 확인 해제는 쓰지 않는다(solve_cloudflare 는 항상 끈다).
 """
 import json
 import os
@@ -20,7 +18,7 @@ def fetch(url, css=None, profile=KORAIL_PROFILE, timeout=60, api=None):
         "url": url,
         "mode": "stealth",       # 서버가 real_chrome 이면 어차피 이 경로(보이는 창)를 쓴다
         "real_chrome": True,
-        "solve_cloudflare": False,
+        "solve_cloudflare": True,
         "profile": profile,
         "timeout": timeout,
     }
