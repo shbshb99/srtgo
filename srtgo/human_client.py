@@ -26,7 +26,10 @@ PROFILE = "korail"
 HUMAN_FETCH_PS1 = os.environ.get("HUMAN_FETCH_PS1", r"C:\shb-gpt\ops\human_fetch.ps1")
 REMOTE_API = os.environ.get("HUMAN_FETCH_API", "http://100.106.42.28:8765")
 OUT_DIR = Path(os.environ.get("HUMAN_FETCH_OUT", r"C:\shb-run\tmp\human_fetch\korail"))
-TIMEOUT = 240
+TIMEOUT = 240   # 옛 단일 제한시간(참고용). 지금은 아래 종류별 값을 쓴다
+FETCH_TIMEOUT = 90     # 조회
+ACTION_TIMEOUT = 120   # 로그인·예약
+LOCK_WAIT = 20         # 다른 호출이 통로를 쓰는 중일 때 줄서서 기다리는 최대 초(그 뒤엔 바쁘다고 알린다)
 
 # 열차 줄(li.tckList)을 한 줄씩 짧게 줄여 돌려준다. 값 읽기만 하고 입력은 하지 않는다.
 READ_JS = r"""(async () => {
@@ -45,6 +48,26 @@ _clock = time.monotonic
 
 class HumanFetchError(Exception):
     pass
+
+
+class _Held:
+    """통로를 한 번에 하나만 쓰게 하는 잠금. 다른 호출이 오래 쥐고 있으면 LOCK_WAIT 초만 기다리고 포기한다
+    (무한정 기다리는 스레드가 쌓여 봇 전체가 멈추는 것을 막는다)."""
+
+    def __init__(self, error_cls=None):
+        self.error_cls = error_cls
+
+    def __enter__(self):
+        if not _lock.acquire(timeout=LOCK_WAIT):
+            cls = self.error_cls or HumanFetchError
+            if cls is HumanFetchError:
+                raise cls("앞의 통로 호출이 아직 끝나지 않았습니다. 잠시 뒤 다시 눌러 주세요")
+            raise cls("앞의 통로 호출이 아직 끝나지 않았습니다. 잠시 뒤 다시 눌러 주세요", definite=True)
+        return self
+
+    def __exit__(self, *exc):
+        _lock.release()
+        return False
 
 
 def build_actions(dep, arr, date, hour, today=None):
@@ -87,6 +110,7 @@ RESUME_ACTIONS = [{"press": "F5"}, {"wait_for": "li.tckList", "timeout": 20000}]
 WANT_SERVER_VERSION = 3   # srtgo/scrape_server.py 의 SERVER_VERSION 과 같게 올린다
 NO_SERVER_MSG = ("화면 세션의 통로(예약작업 ShbScrapeApi)가 꺼져 있습니다. 운영PC 에 로그온한 상태에서 "
                  "prod2_scrape_server_pkg.ps1 을 한 번 실행해 예약작업을 만드세요(봇이 통로를 직접 띄우지 않습니다)")
+NO_REMOTE_MSG = "스크래핑 통로가 꺼져 있습니다(운영PC 에서 통로 설치 스크립트 실행 필요)"
 ERROR_TEXT_LIMIT = 600   # 통로·HTTP 오류 본문을 이만큼 남긴다(예전 200자는 원인이 잘렸다)
 last_marks = []   # 마지막 조회의 단계별 누적 시간(초), 측정용
 last_info = {}    # 마지막 조회의 통로 응답 요약(mode, retry, timing)
@@ -172,10 +196,10 @@ def _error_text(ex):
     return ("%s: %s" % (type(ex).__name__, str(ex)))[:ERROR_TEXT_LIMIT]
 
 
-def _send(api, body, error_cls, **kw):
+def _send(api, body, error_cls, timeout=None, **kw):
     req = urllib.request.Request(api + "/fetch", json.dumps(body).encode(), _auth_headers())
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=timeout or FETCH_TIMEOUT) as r:
             res = json.load(r)
     except Exception as ex:
         text = _error_text(ex)
@@ -196,12 +220,12 @@ def _send(api, body, error_cls, **kw):
 def _post(api, actions, query, smart=None):
     body = {
         "url": LIST_URL, "mode": "stealth", "real_chrome": True, "solve_cloudflare": True,
-        "profile": PROFILE, "timeout": 120, "actions": actions, "js": READ_JS,
+        "profile": PROFILE, "timeout": 80, "actions": actions, "js": READ_JS,
         "hold": {"query": query, "resume_actions": RESUME_ACTIONS},
     }
     if smart:
         body["smart"] = smart   # 새 통로는 화면 값을 읽어 다른 칸만 고친다. 옛 통로는 모르는 칸이라 무시하고 actions 를 따른다
-    return _send(api, body, HumanFetchError)
+    return _send(api, body, HumanFetchError, timeout=FETCH_TIMEOUT)
 
 
 def _run_local(actions, query, smart=None):
@@ -210,12 +234,14 @@ def _run_local(actions, query, smart=None):
 
 
 def _run_remote(actions, query, smart=None):
+    if _health(REMOTE_API) is None:   # 2초 안에 응답이 없으면 호출하지 않고 바로 알린다
+        raise HumanFetchError(NO_REMOTE_MSG)
     return _post(REMOTE_API, actions, query, smart)
 
 
 def fetch_list(dep, arr, date, hour):
     """열차 목록 화면을 읽어 {'when': 화면에 뜬 일시, 'rows': [줄 HTML...]} 로 돌려준다. 결과 HTML 은 OUT_DIR 에 남긴다."""
-    with _lock:
+    with _Held():
         # 사람 같은 조회 간격: 마지막 조회로부터 pacing 규칙의 간격이 안 지났으면 남은 만큼 쉰다
         want = _pacer.next_delay()
         if _last[0] is not None:
@@ -383,11 +409,13 @@ def _post_state(url, actions, query, js=STATE_JS, smart=None):
             _ensure_local_server()
         except HumanFetchError as ex:
             raise HumanReserveError(str(ex), definite=True) from ex   # 통로가 없으면 아무것도 누르지 않았다
+    elif _health(api) is None:
+        raise HumanReserveError(NO_REMOTE_MSG, definite=True)   # 호출하지 않았으니 아무것도 누르지 않았다
     body = {"url": url, "mode": "stealth", "real_chrome": True, "solve_cloudflare": True, "profile": PROFILE,
-            "timeout": 120, "actions": actions, "js": js, "hold": {"query": query, "resume_actions": None, "retry": False}}
+            "timeout": 100, "actions": actions, "js": js, "hold": {"query": query, "resume_actions": None, "retry": False}}
     if smart:
         body["smart"] = smart
-    return _send(api, body, HumanReserveError, definite=False)
+    return _send(api, body, HumanReserveError, timeout=ACTION_TIMEOUT, definite=False)
 
 
 LOGIN_FORMAT_MSG = "아이디 형식이 웹 로그인 칸과 안 맞음(아이디 종류를 확인하세요)"
@@ -485,7 +513,7 @@ def login_with(user_id, password):
     if bad:
         return False, bad   # 웹에 보내지 않는다(형식 거부도 실패 횟수에 들어갈 수 있다)
     want = _id_hash(user_id)
-    with _lock:
+    with _Held(HumanReserveError):
         try:
             if LOGIN_ID_MARK.exists() and LOGIN_ID_MARK.read_text().strip() == want and is_logged_in():
                 return True, None
@@ -552,7 +580,7 @@ def classify_reserve_page(st):
 def reserve(train, special=False, chat_id=None, rail_type="KTX", creds=None):
     """선택한 열차를 웹에서 예약한다(결제 전 단계에서 멈춘다). 결제는 사람이 한다.
     WebReservation 을 돌려주거나 HumanReserveError(definite)를 던진다."""
-    with _lock:
+    with _Held(HumanReserveError):
         if not (creds and creds[0]) and not chat_id:
             raise HumanReserveError("계정 정보가 없습니다", definite=True)
         if not is_logged_in():

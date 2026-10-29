@@ -13,6 +13,7 @@
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import logging
@@ -1100,6 +1101,7 @@ class UserContext:
         self.rv_items = []
         self.rails = {}  # 대화용 로그인 세션 (대기용과 따로)
         self.lock = asyncio.Lock()
+        self.busy = None  # 오래 걸리는 통로 조회 중이면 그 이름("search"). 그동안 버튼은 쌓지 않고 바로 답한다
 
     def _load_reminders(self):
         for raw in self.store.reminders_of(self.chat_id):
@@ -1413,6 +1415,15 @@ class Bot(OpsMixin):
 
     # --- 버튼 -----------------------------------------------------------
     async def on_button(self, update, context):
+        chat = update.effective_chat
+        u = self.contexts.get(str(chat.id)) if chat is not None else None
+        if u is not None and u.busy:
+            # 조회가 끝나기 전에 누른 버튼을 줄 세우면 조회가 끝날 때까지 화면이 멈춘 것처럼 보인다
+            try:
+                await update.callback_query.answer("조회 중입니다. 잠시만 기다려 주세요.")
+            except TelegramError:
+                pass
+            return
         async with self._turn(update):
             await self._on_button(update, context)
 
@@ -1474,7 +1485,7 @@ class Bot(OpsMixin):
         waiting = sum(1 for m in u.reminders.values() if m.state not in Reminder.DONE)
         rows = [
             [(f"예약대기 챙기기{f' ({waiting})' if waiting else ''}", "rm")],
-            [("🚅 열차 예매 (KTX·SRT) — 조회만 됨, 예매는 막힐 수 있음", f"book:{BOOKING_RAIL}")],
+            [("🚅 열차 예매 (KTX·SRT) — 조회·예약까지, 결제는 직접", f"book:{BOOKING_RAIL}")],
             [("🎫 예매내역", f"rv:{BOOKING_RAIL}"), (f"📋 대기 상황{f' ({n})' if n else ''}", "status")],
             [("⏹ 대기 중지", "stop"), ("⚙️ 설정", "set")],
             [("❓ 도움말", "help")],
@@ -2138,10 +2149,13 @@ class Bot(OpsMixin):
             return await self.restart_booking(r)
         if d.total() < 1:
             return await self.show_pax(r, note="⚠️ 인원을 1명 이상 정해 주세요.")
+        if u.busy:
+            return await r.show(f"{self._header(d)}\n\n🔎 조회 중입니다. 끝나면 결과가 나옵니다.")
         await r.show(f"{self._header(d)}\n\n🔎 열차를 찾는 중...")
         params = search_params(
             d.rail_type, d.dep, d.arr, d.date, d.time, d.total(), u.ktx_only()
         )
+        u.busy = "search"
         try:
             if d.rail_type == BOOKING_RAIL and os.environ.get("SRTGO_HUMAN_FETCH", "1") != "0":
                 # 코레일 조회는 로그인이 필요 없는 웹 화면으로 돌린다(앱 로그인·조회가 -8204 로 막혀 있어도 된다)
@@ -2158,6 +2172,8 @@ class Bot(OpsMixin):
                 f"{self._header(d)}\n\n⚠️ 검색 실패: {describe_error(ex)}",
                 kb([[("🔄 다시 검색", "search")], [("◀ 시각 다시", "back:time"), HOME]]),
             )
+        finally:
+            u.busy = None
         d.trains = list(trains or [])
         present = {train_key(t) for t in d.trains}
         d.selected = [k for k in d.selected if k in present]
@@ -3370,6 +3386,11 @@ class Bot(OpsMixin):
     async def post_init(self, app):
         self.tg = app.bot
         self._app = app
+        # 통로 호출은 최대 1~2분 걸린다. 기본 스레드 몇 개가 거기에 묶여 다른 일(로그인·예약)이
+        # 줄서지 않게 넉넉히 둔다.
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(max_workers=32, thread_name_prefix="srtgo")
+        )
         try:
             await app.bot.set_my_commands([BotCommand(c, d) for c, d in COMMANDS])
         except TelegramError as ex:
