@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2+ktx.26",
-  "wheel": "srtgo-2.2.2+ktx.26-py3-none-any.whl",
-  "sha256": "c412f902c986671c6ddfdb04ccb90da468c6e34f86c0979d69390db060d66231",
-  "notes": "버튼 멈춤 수리: 통로 호출이 길어져도 메뉴·명령이 바로 응답, 통로 꺼짐 즉시 안내"
+  "version": "2.2.2+ktx.27",
+  "wheel": "srtgo-2.2.2+ktx.27-py3-none-any.whl",
+  "sha256": "2395eeb322a3c2276146b743981d6ae3f8e575fc41b2d8f7f48818f4e3355106",
+  "notes": "코레일 웹 로그인 성공 판정 수리(로그인된 화면을 거부로 오판하던 것), 알림에 화면 본문·이름이 나가지 않게 함"
 }
