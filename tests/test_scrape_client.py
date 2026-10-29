@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from srtgo import scrape_client
 
 
-def test_fetch_never_enables_bypass_options():
+def test_fetch_uses_real_chrome_and_solve():
     seen = {}
 
     class H(BaseHTTPRequestHandler):
@@ -22,5 +22,5 @@ def test_fetch_never_enables_bypass_options():
     threading.Thread(target=srv.handle_request, daemon=True).start()
     out = scrape_client.fetch("https://example.com", api="http://127.0.0.1:%d" % srv.server_port, timeout=5)
     assert out["status"] == 200
-    assert seen["solve_cloudflare"] is False
+    assert seen["solve_cloudflare"] is True   # 현범 2026-10-28: 스크래플링에는 이 옵션을 항상 켠다
     assert seen["real_chrome"] is True and seen["profile"] == "korail"

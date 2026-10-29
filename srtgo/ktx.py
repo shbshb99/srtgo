@@ -15,6 +15,7 @@ except ImportError:
     HAS_CURL_CFFI = False
 import itertools
 import json
+import os
 import re
 import time
 from Crypto.Cipher import AES
@@ -696,6 +697,33 @@ class Korail:
         include_no_seats=False,
         include_waiting_list=False,
     ):
+        # 앱 주소가 -8204 로 막혀 있어, 열차 조회는 코레일 웹을 사람처럼 입력하는 통로로 보낸다.
+        # SRTGO_HUMAN_FETCH=0 이면 예전 앱 방식으로 되돌린다. 예매·결제는 그대로 앱 방식이다.
+        if os.environ.get("SRTGO_HUMAN_FETCH", "1") != "0":
+            from . import human_client
+
+            return human_client.search_train(
+                dep, arr, date, time,
+                train_type=train_type,
+                include_no_seats=include_no_seats,
+                include_waiting_list=include_waiting_list,
+            )
+        return self.search_train_app(
+            dep, arr, date, time, train_type, passengers, include_no_seats, include_waiting_list
+        )
+
+    def search_train_app(
+        self,
+        dep,
+        arr,
+        date=None,
+        time=None,
+        train_type=TrainType.ALL,
+        passengers=None,
+        include_no_seats=False,
+        include_waiting_list=False,
+    ):
+        """앱 방식 조회(옛 방식). 앱 버전 시험 같은 곳에서 직접 부른다."""
         kst_now = datetime.now() + timedelta(hours=9)
         date = date or kst_now.strftime("%Y%m%d")
         time = time or kst_now.strftime("%H%M%S")

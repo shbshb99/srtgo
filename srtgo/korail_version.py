@@ -148,7 +148,7 @@ def probe(app_version: str, version: str) -> bool:
     k._app_version, k._version = app_version, version
     date = (datetime.now() + timedelta(days=1)).strftime("%Y%m%d")
     try:
-        k.search_train("서울", "부산", date, "090000", include_no_seats=True)
+        k.search_train_app("서울", "부산", date, "090000", include_no_seats=True)
         return True
     except ktx.KorailError as ex:
         return not (ex.code == OUTDATED_CODE or OUTDATED_CODE in str(ex.msg))

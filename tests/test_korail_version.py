@@ -62,7 +62,7 @@ def test_blocked_request_does_not_hammer_by_default(home, monkeypatch):
     monkeypatch.setattr(kv, "probe", lambda a, v: pytest.fail("자동으로 버전을 찾으러 감"))
     k = guarded(server)
     with pytest.raises(ktx.KorailError) as ei:
-        k.search_train("동탄", "순천", "20261024", "160000")
+        k.search_train_app("동탄", "순천", "20261024", "160000")
     assert kv.is_blocked(ei.value) and len(server.sent) == 1
 
 
@@ -74,7 +74,7 @@ def test_blocked_search_finds_new_version_saves_it_and_retries(home, monkeypatch
     monkeypatch.setattr(kv, "store_version", lambda: None)
     k = guarded(server)
     with pytest.raises(ktx.NoResultsError):  # 막히지 않고 정상 응답(열차 없음)까지 갔다
-        k.search_train("동탄", "순천", "20261024", "160000")
+        k.search_train_app("동탄", "순천", "20261024", "160000")
     assert k._app_version == "7.1.0"
     assert json.loads((home / "korail.json").read_text(encoding="utf-8"))["app_version"] == "7.1.0"
     retried = server.sent[-1]
@@ -123,7 +123,7 @@ def test_other_failures_are_not_retried(home):
     server.post = lambda url, data=None, headers=None: Resp({"strResult": "FAIL", "h_msg_cd": "P058", "h_msg_txt": "로그인"})
     k = guarded(server)
     with pytest.raises(ktx.NeedToLoginError):
-        k.search_train("서울", "부산", "20261024", "090000")
+        k.search_train_app("서울", "부산", "20261024", "090000")
     assert not (home / "korail.json").exists()
 
 

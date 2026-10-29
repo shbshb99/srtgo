@@ -250,7 +250,7 @@ def test_korail_search_and_reserve_send_app_version_and_station_order():
             FakeResponse({"strResult": "SUCC", "jrny_infos": {"jrny_info": []}}),
         ]
     )
-    [train] = k.search_train("동탄", "순천", "20261024", "160000")
+    [train] = k.search_train_app("동탄", "순천", "20261024", "160000")
     k.reserve(train)
     search, reserve = sent[0], sent[1]
     assert search[0] == "POST" and search[2]["AppVersion"] == k._app_version

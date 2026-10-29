@@ -59,6 +59,12 @@ class FakeKeyring:
 
 
 @pytest.fixture(autouse=True)
+def no_human_fetch(monkeypatch):
+    """가짜 철도사를 쓰는 시험이 진짜 크롬 창을 띄우지 않게 코레일 조회를 앱 방식으로 둔다(사람처럼 조회 시험은 직접 켠다)."""
+    monkeypatch.setenv("SRTGO_HUMAN_FETCH", "0")
+
+
+@pytest.fixture(autouse=True)
 def fake_keyring(monkeypatch):
     fk = FakeKeyring()
     monkeypatch.setattr(botmod, "keyring", fk)

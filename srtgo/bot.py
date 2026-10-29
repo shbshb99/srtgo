@@ -43,7 +43,7 @@ from telegram.ext import (
     filters,
 )
 
-from . import korail_version
+from . import human_client, korail_version
 from .ops import OpsMixin
 from .ktx import (
     AdultPassenger,
@@ -1442,7 +1442,7 @@ class Bot(OpsMixin):
         waiting = sum(1 for m in u.reminders.values() if m.state not in Reminder.DONE)
         rows = [
             [(f"예약대기 챙기기{f' ({waiting})' if waiting else ''}", "rm")],
-            [("🚅 열차 예매 (KTX·SRT) — 코레일이 막아 둠", f"book:{BOOKING_RAIL}")],
+            [("🚅 열차 예매 (KTX·SRT) — 조회만 됨, 예매는 막힐 수 있음", f"book:{BOOKING_RAIL}")],
             [("🎫 예매내역", f"rv:{BOOKING_RAIL}"), (f"📋 대기 상황{f' ({n})' if n else ''}", "status")],
             [("⏹ 대기 중지", "stop"), ("⚙️ 설정", "set")],
             [("❓ 도움말", "help")],
@@ -1912,8 +1912,8 @@ class Bot(OpsMixin):
         await self.show_stations(
             r,
             "dep",
-            note="코레일이 자동 예매 프로그램의 접속을 막아 둔 상태입니다. "
-            "조회부터 안 될 수 있습니다. 매진 열차는 '예약대기 챙기기'를 쓰세요.",
+            note="열차 조회는 코레일 웹을 사람처럼 입력하는 방식으로 합니다(로그인 없이, 몇 초 걸립니다). "
+            "예매는 코레일이 자동 프로그램의 접속을 막아 둔 상태라 안 될 수 있습니다. 매진 열차는 '예약대기 챙기기'를 쓰세요.",
         )
 
     async def show_stations(self, r, kind, show_all=False, note=None):
@@ -2111,7 +2111,11 @@ class Bot(OpsMixin):
             d.rail_type, d.dep, d.arr, d.date, d.time, d.total(), u.ktx_only()
         )
         try:
-            trains = await self._with_rail(u, d.rail_type, lambda rail: rail.search_train(**params))
+            if d.rail_type == BOOKING_RAIL and os.environ.get("SRTGO_HUMAN_FETCH", "1") != "0":
+                # 코레일 조회는 로그인이 필요 없는 웹 화면으로 돌린다(앱 로그인·조회가 -8204 로 막혀 있어도 된다)
+                trains = await asyncio.to_thread(human_client.search_train, **params)
+            else:
+                trains = await self._with_rail(u, d.rail_type, lambda rail: rail.search_train(**params))
         except NoResultsError:
             trains = []
         except RailLoginError as ex:
