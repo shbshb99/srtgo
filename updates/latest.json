@@ -1,0 +1,6 @@
+{
+  "version": "2.2.2+ktx.29",
+  "wheel": "srtgo-2.2.2+ktx.29-py3-none-any.whl",
+  "sha256": "23d3e256a203d6e4f7cd97391163e9951663e2fd43b7fef56a1e3f4fe94fe643",
+  "notes": "코레일 공지 창 때문에 열차 조회가 멈추던 것과, 조건을 바꾼 조회가 0개로 나오던 것을 고침"
+}

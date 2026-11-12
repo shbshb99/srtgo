@@ -20,6 +20,7 @@ import re
 from .ktx import (
     Korail,
     KorailError,
+    NoResultsError,
     ReserveOption,
     TrainType,
     AdultPassenger,
@@ -80,6 +81,10 @@ STATIONS = {
     "KTX": [
         "서울",
         "용산",
+        # 2026년 9월 1일 SRT 가 KTX 로 통합돼, 옛 SRT 역도 코레일 계정으로 예매한다.
+        "수서",
+        "동탄",
+        "평택지제",
         "영등포",
         "광명",
         "수원",
@@ -89,6 +94,7 @@ STATIONS = {
         "서대전",
         "김천구미",
         "동대구",
+        "서대구",
         "경주",
         "포항",
         "밀양",
@@ -114,8 +120,11 @@ STATIONS = {
 }
 DEFAULT_STATIONS = {
     "SRT": ["수서", "대전", "동대구", "부산"],
-    "KTX": ["서울", "대전", "동대구", "부산"],
+    "KTX": ["서울", "수서", "대전", "동대구", "부산"],
 }
+# 옛 SRT 노선 역. 고속열차만 서므로 'KTX만' 필터를 걸 필요가 없고, 걸면 옛 SRT 열차가
+# 빠질 수 있다.
+SUSEO_LINE_STATIONS = ("수서", "동탄", "평택지제")
 
 # 예약 간격 (평균 간격 (초) = SHAPE * SCALE): gamma distribution (1.25 +/- 0.25 s)
 RESERVE_INTERVAL_SHAPE = 4
@@ -140,11 +149,12 @@ def srtgo(debug=False):
         ("역 설정", 6),
         ("역 직접 수정", 7),
         ("예매 옵션 설정", 8),
+        ("텔레그램 봇 시작", 9),
         ("나가기", -1),
     ]
 
     RAIL_CHOICES = [
-        (colored("SRT", "red"), "SRT"),
+        (colored("SRT", "red") + " (9월부터 KTX로 통합: KTX에서 수서·동탄·평택지제 선택)", "SRT"),
         (colored("KTX", "cyan"), "KTX"),
         ("취소", -1),
     ]
@@ -158,6 +168,7 @@ def srtgo(debug=False):
         6: lambda rt: set_station(rt),
         7: lambda rt: edit_station(rt),
         8: lambda _: set_options(),
+        9: lambda _: start_bot(),
     }
 
     while True:
@@ -309,7 +320,18 @@ def set_telegram() -> bool:
     if not telegram_info:
         return False
 
-    token, chat_id = telegram_info["token"], telegram_info["chat_id"]
+    raw_token, raw_chat_id = telegram_info["token"] or "", telegram_info["chat_id"] or ""
+    token, chat_id = _clean(raw_token), _clean(raw_chat_id)
+    problems = []
+    if not TELEGRAM_TOKEN_RE.match(token):
+        problems.append("token 형식이 아닙니다 (예: 123456789:AAH...)")
+    if not TELEGRAM_CHAT_ID_RE.match(chat_id):
+        problems.append("chat_id 는 숫자여야 합니다 (예: 123456789)")
+    if problems:
+        # 빈 값을 저장하면 기존 값까지 지워지고, 봇은 이유도 모른 채 켜지지 않는다.
+        print("저장하지 않았습니다: " + ", ".join(problems))
+        _paste_hint(raw_token, raw_chat_id, force=not (token and chat_id))
+        return False
 
     try:
         keyring.set_password("telegram", "ok", "1")
@@ -324,9 +346,33 @@ def set_telegram() -> bool:
         return False
 
 
+def _clean(value: Optional[str]) -> str:
+    """붙여넣기로 딸려 들어온 제어문자를 걸러낸다 (토큰에 섞이면 URL이 깨진다)."""
+    return "".join(ch for ch in (value or "") if ch.isprintable()).strip()
+
+
+TELEGRAM_TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{20,}$")
+TELEGRAM_CHAT_ID_RE = re.compile(r"^-?\d{3,}$")
+CTRL_V = "\x16"
+
+
+def _paste_hint(*values: str, force: bool = False) -> bool:
+    """윈도 콘솔의 이 입력칸에서는 Ctrl+V 가 붙여넣기가 아니라 제어문자(\\x16) 하나로 들어온다."""
+    if force or any(CTRL_V in (v or "") for v in values):
+        print("이 입력칸에서는 Ctrl+V 붙여넣기가 되지 않습니다. 마우스 오른쪽 클릭으로 붙여 넣으세요.")
+        return True
+    return False
+
+
+def get_telegram_credentials() -> Tuple[str, str]:
+    return (
+        _clean(keyring.get_password("telegram", "token")),
+        _clean(keyring.get_password("telegram", "chat_id")),
+    )
+
+
 def get_telegram() -> Optional[Callable[[str], Awaitable[None]]]:
-    token = keyring.get_password("telegram", "token")
-    chat_id = keyring.get_password("telegram", "chat_id")
+    token, chat_id = get_telegram_credentials()
 
     async def tgprintf(text):
         if token and chat_id:
@@ -335,6 +381,18 @@ def get_telegram() -> Optional[Callable[[str], Awaitable[None]]]:
                 await bot.send_message(chat_id=chat_id, text=text)
 
     return tgprintf
+
+
+def start_bot() -> None:
+    from .bot import EXIT_ALREADY_RUNNING, run_bot
+
+    print("텔레그램 봇을 시작합니다. 텔레그램에서 /start 를 보내세요. (Ctrl-C 로 종료)")
+    print("※ 운영PC에서 워치독(srtgo-watchdog)으로 항상 켜 두고 있다면 여기서 켤 필요가 없습니다.")
+    code = run_bot()
+    if code == EXIT_ALREADY_RUNNING:
+        print("이 PC에서 봇이 이미 실행 중입니다 (워치독이 띄운 봇일 수 있습니다).")
+    elif code == 2:
+        print("텔레그램 설정이 없습니다. '텔레그램 설정'을 먼저 해주세요.")
 
 
 def set_card() -> None:
@@ -370,6 +428,8 @@ def set_card() -> None:
         ]
     )
     if card_info:
+        if _paste_hint(*card_info.values()):
+            return
         for key, value in card_info.items():
             keyring.set_password("card", key, value)
         keyring.set_password("card", "ok", "1")
@@ -412,13 +472,19 @@ def set_login(rail_type="SRT", debug=False):
     )
     if not login_info:
         return False
+    if _paste_hint(login_info["id"], login_info["pass"]):
+        return False
 
     try:
-        SRT(
-            login_info["id"], login_info["pass"], verbose=debug
-        ) if rail_type == "SRT" else Korail(
-            login_info["id"], login_info["pass"], verbose=debug
-        )
+        if rail_type == "SRT":
+            SRT(login_info["id"], login_info["pass"], verbose=debug)
+        else:
+            # Korail 은 로그인에 실패해도 예외를 던지지 않는다. 확인 안 하면 틀린
+            # 비밀번호가 그대로 저장되고 이후 모든 조회가 이유 없이 실패한다.
+            korail = Korail(login_info["id"], login_info["pass"], verbose=debug)
+            if not korail.logined:
+                print(f"KTX 로그인 실패: {korail.login_error}")
+                return False
 
         keyring.set_password(rail_type, "id", login_info["id"])
         keyring.set_password(rail_type, "pass", login_info["pass"])
@@ -619,12 +685,20 @@ def reserve(rail_type="SRT", debug=False):
             if is_srt
             else {
                 "include_no_seats": True,
-                **({"train_type": TrainType.KTX} if "ktx" in options else {}),
+                **(
+                    {"train_type": TrainType.KTX}
+                    if "ktx" in options
+                    and not {info["departure"], info["arrival"]} & set(SUSEO_LINE_STATIONS)
+                    else {}
+                ),
             }
         ),
     }
 
-    trains = rail.search_train(**params)
+    try:
+        trains = rail.search_train(**params)
+    except NoResultsError:
+        trains = []
 
     def train_decorator(train):
         msg = train.__repr__()
@@ -691,8 +765,7 @@ def reserve(rail_type="SRT", debug=False):
             )
             msg += "\n결제 완료"
 
-        tgprintf = get_telegram()
-        asyncio.run(tgprintf(msg))
+        _notify(msg)
 
     # Reservation loop
     i_try = 0
@@ -751,7 +824,7 @@ def reserve(rail_type="SRT", debug=False):
             msg = ex.msg
             if "Need to Login" in msg:
                 rail = login(rail_type, debug=debug)
-                if not rail.is_login and not _handle_error(ex):
+                if not rail.logined and not _handle_error(ex):
                     return
             elif not any(
                 err in msg
@@ -789,14 +862,20 @@ def _sleep():
     )
 
 
+def _notify(text: str) -> None:
+    try:
+        asyncio.run(get_telegram()(text))
+    except Exception as err:
+        print(f"[텔레그램 알림 실패] {err}")
+
+
 def _handle_error(ex, msg=None):
     msg = (
         msg
         or f"\nException: {ex}, Type: {type(ex)}, Message: {ex.msg if hasattr(ex, 'msg') else 'No message attribute'}"
     )
     print(msg)
-    tgprintf = get_telegram()
-    asyncio.run(tgprintf(msg))
+    _notify(msg)
     return inquirer.confirm(message="계속할까요", default=True)
 
 
@@ -864,8 +943,7 @@ def check_reservation(rail_type="SRT", debug=False):
                         out.extend(map(str, reservation.tickets))
 
             if out:
-                tgprintf = get_telegram()
-                asyncio.run(tgprintf("\n".join(out)))
+                _notify("\n".join(out))
             return
 
         # If choice is an unpaid reservation, ask to pay or cancel

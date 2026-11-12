@@ -15,6 +15,7 @@ except ImportError:
     HAS_CURL_CFFI = False
 import itertools
 import json
+import os
 import re
 import time
 from Crypto.Cipher import AES
@@ -22,12 +23,23 @@ from Crypto.Util.Padding import pad
 from datetime import datetime, timedelta
 from functools import reduce
 
+from . import korail_version
+from .dynapath import (
+    DYNAPATH_HEADER_NAME,
+    DynapathTokenSettings,
+    generate_dynapath_device_id,
+    generate_dynapath_token,
+)
+
 
 # Constants
 EMAIL_REGEX = re.compile(r"[^@]+@[^@]+\.[^@]+")
 PHONE_NUMBER_REGEX = re.compile(r"(\d{3})-(\d{3,4})-(\d{4})")
 
-USER_AGENT = "Dalvik/2.1.0 (Linux; U; Android 14; SM-S912N Build/UP1A.231005.007)"
+USER_AGENT = "Dalvik/2.1.0 (Linux; U; Android 15; Android)"
+
+# 응답 없이 매달려 있지 않도록: 넘기면 실패시키고 다음 시도에서 재요청한다.
+REQUEST_TIMEOUT = 30
 
 DEFAULT_HEADERS = {
     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -37,7 +49,21 @@ DEFAULT_HEADERS = {
     "Accept-Encoding": "gzip",
 }
 
-KORAIL_MOBILE = "https://smart.letskorail.com:443/classes/com.korail.mobile"
+# 코레일 앱 버전 기본값. ~/.srtgo/korail.json 의 {"app_version", "version"} 이 있으면 그걸 쓴다.
+# 서버가 옛 버전을 막으면(-8204) korail_version 이 맞는 값을 찾아 그 파일에 저장한다.
+KORAIL_APP_VERSION = "7.0.10"  # 2026-10-21 코레일+ 앱 기준
+KORAIL_API_VERSION = "250601003"
+
+
+def korail_versions() -> tuple[str, str]:
+    conf = korail_version.load_config()
+    app = str(conf.get("app_version") or KORAIL_APP_VERSION).strip()
+    api = str(conf.get("version") or KORAIL_API_VERSION).strip()
+    return app, api
+
+
+KORAIL_ROOT = "https://smart.letskorail.com:443"
+KORAIL_MOBILE = f"{KORAIL_ROOT}/classes/com.korail.mobile"
 API_ENDPOINTS = {
     "login": f"{KORAIL_MOBILE}.login.Login",
     "logout": f"{KORAIL_MOBILE}.common.logout",
@@ -76,6 +102,12 @@ class Schedule:
         self.arr_time = data.get("h_arv_tm")
 
         self.run_date = data.get("h_run_dt")
+
+        # 코레일+ 7.0.8부터 예약 요청에 필수: 출발·도착역의 편성/운행 순서.
+        self.dep_stn_cons_ordr = data.get("h_dpt_stn_cons_ordr", "000000")
+        self.dep_stn_run_ordr = data.get("h_dpt_stn_run_ordr", "000000")
+        self.arr_stn_cons_ordr = data.get("h_arv_stn_cons_ordr", "000000")
+        self.arr_stn_run_ordr = data.get("h_arv_stn_run_ordr", "000000")
 
     def __repr__(self):
         dep_time = f"{self.dep_time[:2]}:{self.dep_time[2:4]}"
@@ -421,7 +453,7 @@ class NetFunnelHelper:
 
     def __init__(self):
         if HAS_CURL_CFFI:
-            self._session = curl_cffi.Session(impersonate="chrome131_android")
+            self._session = curl_cffi.Session(impersonate="chrome131_android", timeout=REQUEST_TIMEOUT)
         else:
             self._session = requests.session()
         self._session.headers.update(self.DEFAULT_HEADERS)
@@ -505,23 +537,37 @@ class NetFunnelHelper:
         )
 
 
+def _human_mode():
+    """SRTGO_HUMAN_FETCH=0 이면 예전 앱 방식(로그인·조회·예약 모두)."""
+    return os.environ.get("SRTGO_HUMAN_FETCH", "1") != "0"
+
+
 class Korail:
     """Main Korail API interface"""
 
-    def __init__(self, korail_id, korail_pw, auto_login=True, verbose=False):
+    def __init__(self, korail_id, korail_pw, auto_login=True, verbose=False, version_guard=True):
         if HAS_CURL_CFFI:
-            self._session = curl_cffi.Session(impersonate="chrome131_android")
+            self._session = curl_cffi.Session(impersonate="chrome131_android", timeout=REQUEST_TIMEOUT)
         else:
             self._session = requests.session()
         self._session.headers.update(DEFAULT_HEADERS)
+        if version_guard:
+            # -8204(옛 앱 버전)면 맞는 버전을 찾아 저장하고 다시 보낸다.
+            self._session = korail_version.GuardedSession(self._session, self)
         self._device = "AD"
-        self._version = "240531001"
+        # Version(API 계약)과 AppVersion(앱 버전)이 낮으면 서버가 -8204로 막는다.
+        self._app_version, self._version = korail_versions()
         self._key = "korail1234567890"
         self._idx = None
+        self._dynapath_device_id = generate_dynapath_device_id()
+        self._dynapath_app_start_ts = str(int(time.time() * 1000))
         self.korail_id = korail_id
         self.korail_pw = korail_pw
         self.verbose = verbose
         self.logined = False
+        # 로그인 실패 사유(코레일 응답의 h_msg_txt). login()은 실패해도 예외를 던지지
+        # 않으므로, 호출하는 쪽이 logined 와 함께 이걸 보고 실패를 알아야 한다.
+        self.login_error = None
         self.membership_number = None
         self.name = None
         self.email = None
@@ -533,9 +579,26 @@ class Korail:
         if self.verbose:
             print(f"[*] {msg}")
 
+    def _dynapath_header(self) -> dict:
+        settings = DynapathTokenSettings(
+            device_id=self._dynapath_device_id,
+            app_start_ts=self._dynapath_app_start_ts,
+        )
+        return {DYNAPATH_HEADER_NAME: generate_dynapath_token(settings)}
+
     def __enc_password(self, password):
         url = API_ENDPOINTS["code"]
-        data = {"code": "app.login.cphd"}
+        # 공통 파라미터와 화면 정보가 빠지면 세션에 맞지 않는 키가 와서 비밀번호가 틀린 것으로 나온다.
+        data = {
+            "Device": self._device,
+            "Version": self._version,
+            "AppVersion": self._app_version,
+            "Key": self._key,
+            "code": "app.login.cphd",
+            "deviceWidth": "1440",
+            "deviceHeight": "3120",
+            "OSVersion": "37",
+        }
         r = self._session.post(url, data=data)
         j = json.loads(r.text)
 
@@ -546,16 +609,40 @@ class Korail:
             iv = key[:16].encode("utf-8")
             cipher = AES.new(encrypt_key, AES.MODE_CBC, iv)
             padded_data = pad(password.encode("utf-8"), AES.block_size)
-            return base64.b64encode(
-                base64.b64encode(cipher.encrypt(padded_data))
-            ).decode("utf-8")
+            # 앱과 같은 이중 Base64: 안쪽은 표준(줄바꿈 없음), 바깥은 URL-safe에 76자 줄바꿈.
+            inner = base64.b64encode(cipher.encrypt(padded_data)).decode("ascii")
+            outer = base64.urlsafe_b64encode(inner.encode("ascii")).decode("ascii")
+            return "\n".join(outer[i : i + 76] for i in range(0, len(outer), 76)) + "\n"
         return False
+
+    def _check_service(self):
+        """로그인 전 서비스 상태 확인. 앱과 같은 순서로 세션 쿠키를 받아 둔다."""
+        try:
+            self._session.post(
+                f"{KORAIL_ROOT}/file/CACHE/MobileService.cache",
+                data={"timeStamp": str(int(time.time() * 1000))},
+            )
+        except Exception as e:
+            self._log(f"check_service failed (ignored): {e}")
 
     def login(self, korail_id=None, korail_pw=None):
         if korail_id:
             self.korail_id = korail_id
         if korail_pw:
             self.korail_pw = korail_pw
+
+        if _human_mode():
+            # 앱 로그인은 -8204 로 막힌다. 코레일 웹 로그인 화면에 사람처럼 입력한다(이미 로그인돼 있으면 입력하지 않는다).
+            from . import human_client
+
+            ok, why = human_client.login_with(self.korail_id, self.korail_pw)
+            self.logined = bool(ok)
+            self.login_error = None if ok else why
+            if ok:
+                self.name = self.name or ""
+            return bool(ok)
+
+        self._check_service()
 
         txt_input_flg = (
             "5"
@@ -568,29 +655,36 @@ class Korail:
         data = {
             "Device": self._device,
             "Version": self._version,
+            "AppVersion": self._app_version,
             "Key": self._key,
+            "txtInputFlg": txt_input_flg,
             "txtMemberNo": self.korail_id,
             "txtPwd": self.__enc_password(self.korail_pw),
-            "txtInputFlg": txt_input_flg,
+            "checkValidPw": "Y",
             "idx": self._idx,
         }
 
-        r = self._session.post(API_ENDPOINTS["login"], data=data)
+        r = self._session.post(
+            API_ENDPOINTS["login"], data=data, headers=self._dynapath_header()
+        )
         self._log(r.text)
         j = json.loads(r.text)
 
         if j["strResult"] == "SUCC" and j.get("strMbCrdNo"):
             # self._key = j['Key']
             self.membership_number = j["strMbCrdNo"]
-            self.name = j["strCustNm"]
-            self.email = j["strEmailAdr"]
-            self.phone_number = j["strCpNo"]
+            # 이름·메일·전화는 표시용이라 빠져 있어도 로그인은 성공으로 본다.
+            self.name = j.get("strCustNm") or ""
+            self.email = j.get("strEmailAdr") or ""
+            self.phone_number = j.get("strCpNo") or ""
             print(
                 f"로그인 성공: {self.name} (멤버십번호: {self.membership_number}, 전화번호: {self.phone_number})"
             )
             self.logined = True
+            self.login_error = None
             return True
         self.logined = False
+        self.login_error = j.get("h_msg_txt") or "코레일 로그인 실패 (사유 미상)"
         return False
 
     def logout(self):
@@ -619,6 +713,33 @@ class Korail:
         include_no_seats=False,
         include_waiting_list=False,
     ):
+        # 앱 주소가 -8204 로 막혀 있어, 열차 조회는 코레일 웹을 사람처럼 입력하는 통로로 보낸다.
+        # SRTGO_HUMAN_FETCH=0 이면 예전 앱 방식으로 되돌린다. 예매·결제는 그대로 앱 방식이다.
+        if os.environ.get("SRTGO_HUMAN_FETCH", "1") != "0":
+            from . import human_client
+
+            return human_client.search_train(
+                dep, arr, date, time,
+                train_type=train_type,
+                include_no_seats=include_no_seats,
+                include_waiting_list=include_waiting_list,
+            )
+        return self.search_train_app(
+            dep, arr, date, time, train_type, passengers, include_no_seats, include_waiting_list
+        )
+
+    def search_train_app(
+        self,
+        dep,
+        arr,
+        date=None,
+        time=None,
+        train_type=TrainType.ALL,
+        passengers=None,
+        include_no_seats=False,
+        include_waiting_list=False,
+    ):
+        """앱 방식 조회(옛 방식). 앱 버전 시험 같은 곳에서 직접 부른다."""
         kst_now = datetime.now() + timedelta(hours=9)
         date = date or kst_now.strftime("%Y%m%d")
         time = time or kst_now.strftime("%H%M%S")
@@ -645,7 +766,8 @@ class Korail:
         data = {
             "Device": self._device,
             "Version": self._version,
-            "Sid": "",
+            "AppVersion": self._app_version,
+            "Key": self._key,
             "txtMenuId": "11",
             "radJobId": "1",
             "selGoTrain": train_type,
@@ -667,9 +789,12 @@ class Korail:
             "rtYn": "N",  # 왕복
             "adjStnScdlOfrFlg": "N",  # 인접역 보기
             "mbCrdNo": self.membership_number,
+            "qryDvCd": "1",  # 조회 구분(직통). 7.0.8부터 필수
         }
 
-        r = self._session.get(API_ENDPOINTS["search_schedule"], params=data)
+        r = self._session.post(
+            API_ENDPOINTS["search_schedule"], data=data, headers=self._dynapath_header()
+        )
         self._log(r.text)
         j = json.loads(r.text)
 
@@ -712,52 +837,60 @@ class Korail:
         passengers = Passenger.reduce(passengers)
         cnt = sum(p.count for p in passengers)
 
+        # 앱 주소가 -8204 로 막혀 있어, 예약은 코레일 웹을 사람처럼 눌러 결제 전 단계까지만 한다(결제는 사람).
+        if _human_mode():
+            from . import human_client
+
+            if not reserving_seat:
+                raise human_client.HumanReserveError("웹 예약은 예약대기를 지원하지 않습니다", definite=True)
+            if cnt != 1 or not isinstance(passengers[0], AdultPassenger):
+                raise human_client.HumanReserveError("웹 예약은 어른 1명만 지원합니다", definite=True)
+            return human_client.reserve(
+                train, special=is_special_seat, creds=(self.korail_id, self.korail_pw)
+            )
+
         data = {
             "Device": self._device,
             "Version": self._version,
+            "AppVersion": self._app_version,
             "Key": self._key,
             "txtMenuId": "11",
             "txtJobId": "1101" if reserving_seat else "1102",
-            "txtGdNo": "",
             "hidFreeFlg": "N",
+            "txtStndFlg": "N",
             "txtTotPsgCnt": cnt,
             "txtSeatAttCd1": "000",
             "txtSeatAttCd2": "000",
             "txtSeatAttCd3": "000",
             "txtSeatAttCd4": "015",
             "txtSeatAttCd5": "000",
-            "txtStndFlg": "N",
-            "txtSrcarCnt": "0",
             "txtJrnyCnt": "1",
-            "txtJrnySqno1": "001",
+            "txtSrcarCnt": "0",
+            # 7.0.8: 여정에 역 편성/운행 순서가 필수, 쓰지 않는 두 번째 여정 필드는 보내지 않는다.
             "txtJrnyTpCd1": "11",
-            "txtDptDt1": train.dep_date,
-            "txtDptRsStnCd1": train.dep_code,
-            "txtDptTm1": train.dep_time,
-            "txtArvRsStnCd1": train.arr_code,
+            "txtJrnySqno1": "001",
             "txtTrnNo1": train.train_no,
-            "txtRunDt1": train.run_date,
             "txtTrnClsfCd1": train.train_type,
             "txtTrnGpCd1": train.train_group,
+            "txtRunDt1": train.run_date,
+            "txtDptDt1": train.dep_date,
+            "txtDptTm1": train.dep_time,
+            "txtDptRsStnCd1": train.dep_code,
+            "txtDptStnConsOrdr1": train.dep_stn_cons_ordr,
+            "txtDptStnRunOrdr1": train.dep_stn_run_ordr,
+            "txtArvRsStnCd1": train.arr_code,
+            "txtArvStnConsOrdr1": train.arr_stn_cons_ordr,
+            "txtArvStnRunOrdr1": train.arr_stn_run_ordr,
+            "txtChgFlg1": "N",
             "txtPsrmClCd1": "2" if is_special_seat else "1",
-            "txtChgFlg1": "",
-            "txtJrnySqno2": "",
-            "txtJrnyTpCd2": "",
-            "txtDptDt2": "",
-            "txtDptRsStnCd2": "",
-            "txtDptTm2": "",
-            "txtArvRsStnCd2": "",
-            "txtTrnNo2": "",
-            "txtRunDt2": "",
-            "txtTrnClsfCd2": "",
-            "txtPsrmClCd2": "",
-            "txtChgFlg2": "",
         }
 
         for i, psg in enumerate(passengers, 1):
             data.update(psg.get_dict(i))
 
-        r = self._session.get(API_ENDPOINTS["reserve"], params=data)
+        r = self._session.post(
+            API_ENDPOINTS["reserve"], data=data, headers=self._dynapath_header()
+        )
         self._log(r.text)
         j = json.loads(r.text)
         if self._result_check(j):
@@ -853,17 +986,22 @@ class Korail:
         r = self._session.get(API_ENDPOINTS["myreservationlist"], params=data)
         self._log(r.text)
         j = json.loads(r.text)
+        # 항상 (좌석 목록, wct_no) 를 돌려준다. 예전처럼 None 을 돌려주면 받는 쪽
+        # (reservations)의 언패킹이 터져서, 서버에선 이미 잡힌 예약이 예외로 끝나
+        # '예약 실패'로 보이고 다시 예약하게 된다 (중복 예매). 예약대기처럼 좌석이
+        # 아직 없는 예약에서 이 경로를 탄다.
         try:
             if not self._result_check(j):
-                return []
+                return [], None
 
             wct_no = j.get("h_wct_no")
             if jrny_info := j.get("jrny_infos", {}).get("jrny_info", []):
                 if seat_info := jrny_info[0].get("seat_infos", {}).get("seat_info", []):
                     return [Seat(seat) for seat in seat_info], wct_no
+            return [], wct_no
 
         except NoResultsError:
-            return None
+            return [], None
 
     def pay_with_card(
         self,
