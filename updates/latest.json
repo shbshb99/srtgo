@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2+ktx.28",
-  "wheel": "srtgo-2.2.2+ktx.28-py3-none-any.whl",
-  "sha256": "587f0eda40a75666ad74d0ade987871f393771493bc0faae45a01deafde7b6be",
-  "notes": "클릭 사이 불필요한 대기를 줄임(사람처럼 곧바로 다음 목표로)"
+  "version": "2.2.2+ktx.29",
+  "wheel": "srtgo-2.2.2+ktx.29-py3-none-any.whl",
+  "sha256": "23d3e256a203d6e4f7cd97391163e9951663e2fd43b7fef56a1e3f4fe94fe643",
+  "notes": "코레일 공지 창 때문에 열차 조회가 멈추던 것과, 조건을 바꾼 조회가 0개로 나오던 것을 고침"
 }
