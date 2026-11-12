@@ -268,7 +268,8 @@ def human_actions(p, steps, look=True, timing=None, t0=None):
         elif "settle" in s:
             # 목록 화면은 값을 바꾸면 저절로 다시 조회된다. 열차 줄이 바뀔 때까지(최대 settle 밀리초) 기다린다. 줄이 같으면 그대로 읽는다
             end = time.monotonic() + int(s["settle"]) / 1000.0
-            while time.monotonic() < end and p.evaluate(ROWS_SIG_JS) == rows_sig[0]:
+            # 빈 목록은 다시 그리는 중일 수 있어 바뀐 것으로 치지 않는다(2026-11-12 0개로 읽힘). 진짜 0개면 settle 만큼 기다린 뒤 읽는다
+            while time.monotonic() < end and p.evaluate(ROWS_SIG_JS) in (rows_sig[0], ""):
                 p.wait_for_timeout(150)
             p.wait_for_timeout(random.randint(100, 250))
         elif "cal_month" in s:
