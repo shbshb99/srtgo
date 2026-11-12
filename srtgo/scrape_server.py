@@ -22,6 +22,7 @@ import traceback
 SERVER_VERSION = 4   # 올리면 봇이 옛 통로를 /quit 로 끄고 예약작업이 새로 켠다(human_client.WANT_SERVER_VERSION 과 같이)
 PROFILE_ROOT = os.environ.get("SCRAPE_PROFILE_ROOT", r"C:\shb-run\browser\scrape_profiles")
 LIST_HOST_PATH = "korail.com/ticket/search"
+NOTICE_SEL = ".layerWrap.emer_pop %s >> visible=true"
 LOOKUP_BTN = ".btn_lookup"
 RESUME_ACTIONS = [{"press": "F5"}, {"wait_for": "li.tckList", "timeout": 20000}]
 REST_MID = [40, 160]       # 클릭 뒤 쉼(밀리초). 사람은 누른 뒤 곧바로 다음 목표로 가므로 짧게. 화면이 바뀌길 기다리는 일은 쉼이 아니라 아래 기다림 함수가 한다
@@ -386,6 +387,9 @@ class HoldBrowser:
                     p.locator("input[name=txtGoStart], #labelstart").first.wait_for(state="attached", timeout=8000)
                 except Exception:
                     pass
+            # 코레일 공지 창이 역·날짜 칸을 가리면 누르기가 80초씩 막힌다(2026-11-12). '1일간 그만보기'를 눌러 닫는다
+            human_actions(p, [{"click_if": NOTICE_SEL % "label.txt", "timeout": 1500 if fresh else 200},
+                              {"click_if": NOTICE_SEL % ".btn_pop-close", "timeout": 300}], look=False)
             plan = None
             if smart:
                 st = p.evaluate(STATE_JS)
